@@ -228,3 +228,7 @@ def train():
 
     print("-" * 60)
     print("Обучение завершено.")
+
+
+if __name__ == "__main__":
+    train()
