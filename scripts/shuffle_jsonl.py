@@ -2,7 +2,7 @@ import json
 import random
 import os
 
-input_file = "dataset_val_filtered.jsonl"
+input_file = "dataset_train_ready.jsonl"
 
 # Устанавливаем seed на основе текущего времени для более случайного перемешивания
 random.seed(os.urandom(16))
