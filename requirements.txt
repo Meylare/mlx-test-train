@@ -2,5 +2,5 @@ mlx>=0.22.0
 mlx-vlm>=0.3.11
 numpy
 pyarrow
-#decord
+decord
 tqdm

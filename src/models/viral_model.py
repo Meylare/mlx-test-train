@@ -5,6 +5,35 @@ from mlx_vlm.utils import load_config
 from typing import Optional, Tuple, Union, Any
 import math
 
+
+# ---------------------------------------------------------------------------
+# Совместимость: named_modules() для любой версии MLX
+# ---------------------------------------------------------------------------
+
+def _named_modules(module: nn.Module, prefix: str = ""):
+    """
+    Рекурсивно обходит дерево модулей, возвращая (name, module).
+    Работает и если nn.Module.named_modules() есть, и если нет.
+    """
+    # Если mlx-vlm / новая версия MLX уже добавила named_modules — используем
+    if hasattr(module, "named_modules") and callable(module.named_modules):
+        yield from module.named_modules()
+        return
+
+    # Иначе обходим вручную через children()
+    yield prefix, module
+    children = module.children() if callable(getattr(module, "children", None)) else {}
+    if isinstance(children, dict):
+        for name, child in children.items():
+            child_prefix = f"{prefix}.{name}" if prefix else name
+            if isinstance(child, nn.Module):
+                yield from _named_modules(child, child_prefix)
+            elif isinstance(child, (list, tuple)):
+                for i, item in enumerate(child):
+                    if isinstance(item, nn.Module):
+                        yield from _named_modules(item, f"{child_prefix}.{i}")
+
+
 # ---------------------------------------------------------------------------
 # LoRA Implementation for MLX
 # ---------------------------------------------------------------------------
@@ -15,22 +44,22 @@ class LoRALinear(nn.Module):
         self.linear = linear
         
         # Получаем логические размерности слоя.
-        # В MLX QuantizedLinear имеет атрибуты bits и weight.
-        if hasattr(linear, "in_features"):
-            input_dims = linear.in_features
-            output_dims = linear.out_features
-        elif hasattr(linear, "input_dims"):
+        # Приоритет: атрибуты .input_dims / .in_features -> вычисление из weight.shape
+        if hasattr(linear, "input_dims"):
+            # QuantizedLinear в MLX хранит логические размерности
             input_dims = linear.input_dims
             output_dims = linear.output_dims
+        elif hasattr(linear, "in_features"):
+            input_dims = linear.in_features
+            output_dims = linear.out_features
         else:
-            output_dims, input_dims = linear.weight.shape
-            if hasattr(linear, "bits"):
-                # Для квантованных слоев восстанавливаем реальную размерность
-                input_dims *= (32 // linear.bits)
-        
-        # Дополнительная проверка для 4-битных моделей Qwen (3584 -> 448 packed)
-        if input_dims == 448:
-            input_dims = 3584
+            # Fallback: вычисляем из формы весов
+            output_dims, packed_input = linear.weight.shape
+            if hasattr(linear, "bits") and linear.bits < 32:
+                # Квантованный слой: weight.shape[1] = input_dims * bits / 32
+                input_dims = packed_input * (32 // linear.bits)
+            else:
+                input_dims = packed_input
             
         self.lora_a = mx.random.normal((input_dims, r)) * (1 / math.sqrt(input_dims))
         self.lora_b = mx.zeros((r, output_dims))
@@ -55,8 +84,8 @@ def _apply_lora_to_module(module: nn.Module, lora_r: int, lora_alpha: float, lor
     if hasattr(nn, "QuantizedLinear"):
         linear_classes += (nn.QuantizedLinear,)
         
-    # Проходим по всем именованным модулям 
-    for name, child in module.named_modules():
+    # Проходим по всем именованным модулям
+    for name, child in _named_modules(module):
         if isinstance(child, linear_classes):
             # Проверяем, является ли последний компонент имени целью для LoRA
             leaf_name = name.split(".")[-1]
@@ -84,7 +113,7 @@ def freeze_non_lora(model: nn.Module) -> None:
     model.freeze()
     
     # Размораживаем только то, что нужно
-    for name, module in model.named_modules():
+    for name, module in _named_modules(model):
         if isinstance(module, LoRALinear):
             # Размораживаем весь LoRALinear, а затем точечно замораживаем базовый слой
             module.unfreeze()
@@ -95,16 +124,12 @@ def freeze_non_lora(model: nn.Module) -> None:
         model.viral_head.unfreeze()
 
 def save_lora_weights(model: nn.Module, path: str) -> None:
+    """Save only LoRA adapter weights. MLP head is saved separately by the trainer (viral_head.npz)."""
     weights = {}
-    for name, module in model.named_modules():
+    for name, module in _named_modules(model):
         if isinstance(module, LoRALinear):
             weights[f"{name}.lora_a"] = module.lora_a
             weights[f"{name}.lora_b"] = module.lora_b
-        elif "viral_head" in name and isinstance(module, nn.Linear):
-            # Сохраняем веса обучаемой головы
-            weights[f"{name}.weight"] = module.weight
-            if hasattr(module, "bias") and module.bias is not None:
-                weights[f"{name}.bias"] = module.bias
     mx.savez(path, **weights)
 
 # ---------------------------------------------------------------------------
