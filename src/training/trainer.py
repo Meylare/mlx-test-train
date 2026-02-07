@@ -103,6 +103,11 @@ def train():
             n_steps += 1
             progress.set_postfix({"loss": f"{step_loss:.4f}"})
 
+        if accum_count > 0 and accumulated_grads is not None:
+            accumulated_grads = tree_map(lambda g: g * (1.0 / accum_count), accumulated_grads)
+            optimizer.update(model, accumulated_grads)
+            mx.eval(model.parameters(), optimizer.state)
+
         print(f"Epoch {epoch+1} завершена. Средний loss: {total_loss/n_steps:.4f}")
         save_checkpoint(model, os.path.join(CHECKPOINT_DIR, f"epoch_{epoch+1}"))
 
