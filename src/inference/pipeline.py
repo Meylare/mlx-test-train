@@ -1,5 +1,5 @@
 import json
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -174,7 +174,10 @@ def _extract_video_embeddings(
     if video_grid_thw is None:
         raise ValueError("video_grid_thw is required for advice pipeline.")
     t, h_grid, w_grid = _video_grid_to_thw(video_grid_thw)
-    num_video_tokens = t * h_grid * w_grid
+    
+    # ИСПРАВЛЕНИЕ: Qwen2.5-VL объединяет 2x2 патча в 1 токен, 
+    # поэтому количество токенов в последовательности в 4 раза меньше
+    num_video_tokens = (t * h_grid * w_grid) // 4
 
     ids = _collect_video_token_ids(processor)
     if not ids:
@@ -189,7 +192,11 @@ def _extract_video_embeddings(
 
     video_tokens = h[:, start:end, :]
     batch, _, dim = video_tokens.shape
-    video_tokens = video_tokens.reshape((batch, t, h_grid * w_grid, dim))
+    
+    # Здесь тоже делим на 4, чтобы размерности совпали при решейпе
+    tokens_per_frame = (h_grid * w_grid) // 4
+    video_tokens = video_tokens.reshape((batch, t, tokens_per_frame, dim))
+    
     video_frames = mx.mean(video_tokens, axis=2)
     return video_frames
 
@@ -309,7 +316,15 @@ def run_inference(
         optimizer = ViralOptimizer(scorer)
         opt_result = optimizer.optimize(video_frames, verbose=False)
 
-        fps_value = fps if fps and fps > 0 else 2.0
+        # Считаем "эффективный FPS" специально для Advisor.
+        # Это нужно, так как модель объединяет кадры, и Advisor должен 
+        # распределить эти несколько точек по всей длине видео.
+        num_frames_in_sequence = video_frames.shape[1] 
+        if duration_sec and duration_sec > 0 and num_frames_in_sequence > 1:
+            fps_value = (num_frames_in_sequence - 1) / duration_sec
+        else:
+            fps_value = 1.0 
+
         advisor = TimecodeAdvisor(fps=fps_value)
         advice = advisor.analyze(
             delta_z=opt_result.delta_z,
