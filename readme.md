@@ -16,3 +16,34 @@
 3. Подключать `viral_head.npz`.
 
 Это позволяет экономить десятки гигабайт места на диске и делиться обученной моделью, просто пересылая маленькие файлы.
+
+## Inference by video_id (SQLite + GCS)
+
+### 1) Prepare SQLite DB
+Create a JSONL file with one object per line:
+```json
+{"video_id":"abc123","gcs_uri":"gs://my-bucket/path/video.mp4","transcript":"...","system_prompt":"...","metadata":{"title":"..."}}
+```
+Ingest it:
+```bash
+python scripts/ingest_metadata.py --input-jsonl data/videos.jsonl
+```
+
+### 2) Authenticate to GCS (ADC)
+```bash
+gcloud auth application-default login
+```
+
+### 3) Run inference
+```bash
+python scripts/run_inference.py --video-id abc123 --checkpoint-dir checkpoints/epoch_3
+```
+
+Optional JSON output:
+```bash
+python scripts/run_inference.py --video-id abc123 --out-json outputs/abc123.json
+```
+
+Notes:
+- `gcs_uri` can also be a local file path for quick testing.
+- Default cache dir: `.cache/videos` (disable with `--no-cache`).

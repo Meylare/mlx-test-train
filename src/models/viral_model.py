@@ -2,8 +2,9 @@ import mlx.core as mx
 import mlx.nn as nn
 from mlx_vlm import load
 from mlx_vlm.utils import load_config
-from typing import Optional, Tuple, Union, Any
+from typing import Optional, Tuple, Union, Any, Dict
 import math
+import numpy as np
 
 
 # ---------------------------------------------------------------------------
@@ -131,6 +132,85 @@ def save_lora_weights(model: nn.Module, path: str) -> None:
             weights[f"{name}.lora_a"] = module.lora_a
             weights[f"{name}.lora_b"] = module.lora_b
     mx.savez(path, **weights)
+
+
+def load_lora_weights(model: nn.Module, path: str) -> None:
+    with np.load(path) as data:
+        tensors: Dict[str, mx.array] = {k: mx.array(data[k]) for k in data.files}
+
+    expected = []
+    for name, module in _named_modules(model):
+        if isinstance(module, LoRALinear):
+            expected.append(f"{name}.lora_a")
+            expected.append(f"{name}.lora_b")
+
+    missing = [k for k in expected if k not in tensors]
+    extra = [k for k in tensors.keys() if k not in expected]
+    if missing or extra:
+        raise ValueError(
+            f"LoRA weights mismatch. Missing: {missing}, Extra: {extra}"
+        )
+
+    for name, module in _named_modules(model):
+        if isinstance(module, LoRALinear):
+            key_a = f"{name}.lora_a"
+            key_b = f"{name}.lora_b"
+            w_a = tensors[key_a]
+            w_b = tensors[key_b]
+            if module.lora_a.shape != w_a.shape or module.lora_b.shape != w_b.shape:
+                raise ValueError(
+                    f"LoRA shape mismatch for {name}: "
+                    f"expected {module.lora_a.shape}/{module.lora_b.shape}, "
+                    f"got {w_a.shape}/{w_b.shape}"
+                )
+            module.lora_a = w_a
+            module.lora_b = w_b
+
+
+def load_viral_head(model: nn.Module, path: str) -> None:
+    with np.load(path) as data:
+        tensors: Dict[str, mx.array] = {k: mx.array(data[k]) for k in data.files}
+
+    if not hasattr(model, "viral_head"):
+        raise ValueError("Model has no viral_head to load.")
+
+    expected: Dict[str, mx.array] = {}
+
+    def _flatten(tree: Dict[str, Any], out: Dict[str, mx.array], prefix: str = "") -> None:
+        for k, v in tree.items():
+            name = f"{prefix}.{k}" if prefix else k
+            if isinstance(v, mx.array):
+                out[name] = v
+            elif isinstance(v, dict):
+                _flatten(v, out, name)
+
+    _flatten(dict(model.viral_head.parameters()), expected)
+
+    missing = [k for k in expected.keys() if k not in tensors]
+    extra = [k for k in tensors.keys() if k not in expected]
+    if missing or extra:
+        raise ValueError(
+            f"Viral head weights mismatch. Missing: {missing}, Extra: {extra}"
+        )
+
+    def _set_by_name(root: nn.Module, name: str, value: mx.array) -> None:
+        parts = name.split(".")
+        module = root
+        for part in parts[:-1]:
+            if not hasattr(module, part):
+                raise ValueError(f"Missing module path: {name}")
+            module = getattr(module, part)
+        if not hasattr(module, parts[-1]):
+            raise ValueError(f"Missing parameter: {name}")
+        setattr(module, parts[-1], value)
+
+    for name, value in tensors.items():
+        if expected[name].shape != value.shape:
+            raise ValueError(
+                f"Viral head shape mismatch for {name}: "
+                f"expected {expected[name].shape}, got {value.shape}"
+            )
+        _set_by_name(model.viral_head, name, value)
 
 # ---------------------------------------------------------------------------
 # MLP Head & Main Model

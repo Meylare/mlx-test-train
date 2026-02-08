@@ -4,3 +4,4 @@ numpy
 pyarrow
 decord
 tqdm
+google-cloud-storage
