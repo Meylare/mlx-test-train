@@ -37,3 +37,5 @@ dataset_train_vi_samples_with_transcript.jsonl
 *.m4p
 gcs_key2.json
 *__pycache__/
+Ds_Store
+*.DS_Store
