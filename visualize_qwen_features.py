@@ -102,6 +102,27 @@ def _resize_heatmap_numpy(heatmap_2d: np.ndarray, target_h: int, target_w: int) 
     return resized
 
 
+
+def _clean_decode_token(processor, token_id: int) -> str:
+    """
+    Декодирует токен в читаемый вид, исправляя кириллицу и спецсимволы.
+    """
+    # Декодируем ID обратно в строку
+    text = processor.decode([token_id])
+    
+    # Обработка спецсимволов для красоты графика
+    if text == '\n':
+        return '\\n'  # Чтобы перенос строки не ломал график
+    if text.strip() == '':
+        # Если это просто пробел или пустой символ
+        if text == ' ':
+            return '[SPACE]'
+        # Проверяем, не спецтокен ли это
+        raw_token = processor.tokenizer.convert_ids_to_tokens([token_id])[0]
+        return raw_token # Возвращаем как есть (например, <|im_start|>)
+        
+    return text.strip()
+
 # ============================================================================
 # ФУНКЦИИ ВИЗУАЛИЗАЦИИ (не требуют импорта моделей)
 # ============================================================================
@@ -111,9 +132,9 @@ def create_attention_heatmap(
     input_ids: mx.array,
     processor,
     output_path: str,
-    max_tokens: int = 50
+    max_tokens: int = 30 # Уменьшил дефолт до 30, чтобы надписи влезали
 ):
-    """Создает тепловую карту attention weights."""
+    """Создает тепловую карту attention weights (Исправленная версия)."""
     # Конвертируем MLX массив в numpy
     if isinstance(attention_weights, mx.array):
         attn_np = np.array(attention_weights)
@@ -129,32 +150,34 @@ def create_attention_heatmap(
     seq_len = min(attn_np.shape[0], max_tokens)
     attn_matrix = attn_np[:seq_len, :seq_len]
     
-    # Декодируем токены для подписей
+    # === ИЗМЕНЕНИЕ: Правильное декодирование токенов ===
     token_ids = input_ids_np[:seq_len]
-    try:
-        tokens = processor.tokenizer.convert_ids_to_tokens(token_ids.tolist())
-        token_labels = [t[:10] + '...' if len(t) > 10 else t for t in tokens]
-    except:
-        token_labels = [f"Token_{i}" for i in range(seq_len)]
+    token_labels = []
+    for tid in token_ids:
+        label = _clean_decode_token(processor, int(tid))
+        if len(label) > 10:
+            label = label[:8] + '..'
+        token_labels.append(label)
+    # ===================================================
     
     # Создание графика
-    plt.figure(figsize=(max(12, seq_len * 0.3), max(10, seq_len * 0.3)))
+    plt.figure(figsize=(12, 10))
     sns.heatmap(
         attn_matrix,
         xticklabels=token_labels,
         yticklabels=token_labels,
-        cmap='YlOrRd',
+        cmap='viridis', # Более контрастная карта
         cbar_kws={'label': 'Attention Weight'},
-        linewidths=0.1,
-        linecolor='gray',
+        linewidths=0.5,
+        linecolor='white',
         square=True
     )
     
-    plt.title('Тепловая карта Attention Weights (последний слой)', fontsize=14, fontweight='bold', pad=20)
-    plt.xlabel('Key Tokens', fontsize=12)
-    plt.ylabel('Query Tokens', fontsize=12)
-    plt.xticks(rotation=90, ha='right', fontsize=8)
-    plt.yticks(rotation=0, fontsize=8)
+    plt.title('Матрица внимания (Attention Map)', fontsize=14, fontweight='bold', pad=20)
+    plt.xlabel('На что смотрят (Key)', fontsize=12)
+    plt.ylabel('Кто смотрит (Query)', fontsize=12)
+    plt.xticks(rotation=45, ha='right', fontsize=10)
+    plt.yticks(rotation=0, fontsize=10)
     plt.tight_layout()
     
     plt.savefig(output_path, dpi=300, bbox_inches='tight')
@@ -169,53 +192,72 @@ def create_token_importance_plot(
     output_path: str,
     top_n: int = 20
 ):
-    """Создает визуализацию важности токенов."""
+    """
+    Создает визуализацию, ИГНОРИРУЯ служебные токены.
+    """
     if token_importance is None:
-        logger.warning("Token importance не вычислена")
         return
     
-    # Конвертируем MLX массив в numpy
-    if isinstance(token_importance, mx.array):
-        importance_np = np.array(token_importance)
-    else:
-        importance_np = token_importance
+    # Конвертируем в numpy
+    importance_np = np.array(token_importance) if isinstance(token_importance, mx.array) else token_importance
+    token_ids = np.array(input_ids) if isinstance(input_ids, mx.array) else input_ids
     
-    if isinstance(input_ids, mx.array):
-        token_ids = np.array(input_ids)
-    else:
-        token_ids = input_ids
+    # Список токенов, которые мы НЕ хотим видеть на графике
+    BANNED_TOKENS = {
+        '<|im_start|>', '<|im_end|>', 'assistant', 'user', 'system', 
+        '\n', ':', '.', ',', '_', 'Ċ', 'Ġ', 'video', '<|video_pad|>',
+        '<|vision_start|>', '<|vision_end|>'
+    }
+
+    # Собираем пары (важность, слово)
+    candidates = []
     
+    for idx, (imp, tid) in enumerate(zip(importance_np, token_ids)):
+        # Декодируем
+        word = processor.decode([int(tid)]).strip()
+        
+        # Пропускаем, если это мусор, пустота или спецтег
+        if not word: continue
+        if word in BANNED_TOKENS: continue
+        if len(word) < 2: continue # Пропускаем буквы-одиночки
+        if word.startswith('<') and word.endswith('>'): continue # Пропускаем теги
+        
+        candidates.append((imp, word))
+    
+    # Если после фильтрации ничего не осталось (бывает на ранних этапах), берем хоть что-то
+    if not candidates:
+        logger.warning("Все токены были отфильтрованы как мусор. Показываем сырые.")
+        candidates = [(importance_np[i], f"Token_{i}") for i in range(min(top_n, len(importance_np)))]
+
     # Сортируем по важности
-    top_indices = np.argsort(importance_np)[-top_n:][::-1]
+    candidates.sort(key=lambda x: x[0], reverse=True)
     
-    # Декодируем токены
-    try:
-        tokens = processor.tokenizer.convert_ids_to_tokens(token_ids[top_indices].tolist())
-        token_labels = [t[:15] + '...' if len(t) > 15 else t for t in tokens]
-    except:
-        token_labels = [f"Token_{i}" for i in top_indices]
+    # Берем топ-N
+    top_candidates = candidates[:top_n]
     
-    top_importance = importance_np[top_indices]
+    # Разделяем обратно для графика
+    top_vals = [x[0] for x in top_candidates]
+    top_labels = [x[1] for x in top_candidates]
     
-    # Создание графика
-    plt.figure(figsize=(max(10, top_n * 0.5), 6))
-    colors = plt.cm.YlOrRd(np.linspace(0.4, 0.9, top_n))
-    bars = plt.barh(range(top_n), top_importance, color=colors, edgecolor='black', linewidth=0.5)
+    # Рисуем (разворачиваем, чтобы самый важный был наверху)
+    plt.figure(figsize=(10, 8))
     
-    plt.yticks(range(top_n), token_labels, fontsize=9)
-    plt.xlabel('Важность токена (Gradient Magnitude)', fontsize=12, fontweight='bold')
-    plt.title(f'Топ-{top_n} важных токенов (Gradient-based)', fontsize=14, fontweight='bold', pad=20)
-    plt.grid(axis='x', alpha=0.3, linestyle='--')
+    # Используем приятную цветовую схему
+    colors = plt.cm.magma(np.linspace(0.3, 0.8, len(top_vals)))
     
-    # Добавление значений
-    for i, val in enumerate(top_importance):
-        plt.text(val + max(top_importance) * 0.01, i, f"{val:.4f}", va='center', fontsize=8)
+    y_pos = np.arange(len(top_vals))
+    plt.barh(y_pos, top_vals, color=colors, edgecolor='none')
+    plt.yticks(y_pos, top_labels, fontsize=12)
+    plt.gca().invert_yaxis() # Самый важный сверху
+    
+    plt.xlabel('Важность (без учета спецтегов)', fontsize=12, fontweight='bold')
+    plt.title(f'Топ-{len(top_vals)} смысловых слов', fontsize=14, fontweight='bold')
+    plt.grid(axis='x', alpha=0.2)
     
     plt.tight_layout()
     plt.savefig(output_path, dpi=300, bbox_inches='tight')
-    logger.info(f"✅ График важности токенов сохранен: {output_path}")
+    logger.info(f"✅ График (фильтрованный) сохранен: {output_path}")
     plt.close()
-
 
 def create_frame_importance_plot(
     frame_importance: mx.array,
@@ -815,18 +857,41 @@ def visualize_qwen_features(
         logger.info(f"\n--- Пример {sample_idx + 1}/{num_samples} ---")
         
         try:
-            # Загружаем данные
+            # Загружаем данные (это возвращает одномерные массивы для одного примера)
             batch = dataset._process_item(sample_idx)
             if batch is None:
                 logger.warning(f"Пропуск примера {sample_idx} (не удалось загрузить)")
                 continue
             
-            # Подготавливаем входы
-            input_ids = batch["input_ids"]
-            attention_mask = batch["attention_mask"]
-            pixel_values_videos = batch.get("pixel_values_videos")
-            video_grid_thw = batch.get("video_grid_thw")
+            # === ИСПРАВЛЕНИЕ: Добавляем измерение батча (N) -> (1, N) ===
             
+            # 1. Input IDs
+            input_ids = mx.array(batch["input_ids"])
+            if input_ids.ndim == 1:
+                input_ids = mx.expand_dims(input_ids, axis=0)
+            
+            # 2. Attention Mask
+            attention_mask = mx.array(batch["attention_mask"])
+            if attention_mask.ndim == 1:
+                attention_mask = mx.expand_dims(attention_mask, axis=0)
+            
+            # 3. Pixel Values (Videos)
+            pixel_values_videos = batch.get("pixel_values_videos")
+            if pixel_values_videos is not None:
+                pixel_values_videos = mx.array(pixel_values_videos)
+                # Обычно pixel_values в Qwen плоские, но на всякий случай проверяем, 
+                # если модель ожидает батч (в MLX реализации часто обрабатывается плоско, но оставим как есть)
+            
+            # 4. Video Grid THW (Критическое исправление для ошибки unpacking)
+            video_grid_thw = batch.get("video_grid_thw")
+            if video_grid_thw is not None:
+                video_grid_thw = mx.array(video_grid_thw)
+                # Превращаем [T, H, W] в [[T, H, W]] чтобы цикл for работал корректно
+                if video_grid_thw.ndim == 1:
+                    video_grid_thw = mx.expand_dims(video_grid_thw, axis=0)
+
+            # ==========================================================
+
             # Загружаем оригинальные кадры для визуализации
             item = dataset.data[sample_idx]
             video_path = item.get("video_path")
@@ -847,9 +912,10 @@ def visualize_qwen_features(
             )
             
             # 2. Создаем визуализацию важности токенов
+            # input_ids[0] берем 0-й элемент, так как мы добавили батч
             token_importance_path = os.path.join(sample_dir, "token_importance.png")
             create_token_importance_plot(
-                token_importance, input_ids, model.processor, token_importance_path
+                token_importance, input_ids[0], model.processor, token_importance_path
             )
             
             # 3. Если есть видео, вычисляем важность видео-токенов
@@ -875,13 +941,14 @@ def visualize_qwen_features(
                         frames, video_token_importance, video_grid_thw_used, video_heatmap_path
                     )
             
-            # 6. Создаем mock attention heatmap (так как извлечение реальных attention weights сложнее)
+            # 6. Создаем mock attention heatmap
             logger.info("Создание attention heatmap (mock)...")
             seq_len = input_ids.shape[-1]
             mock_attention = mx.array(create_mock_attention_weights(min(seq_len, 50)))
             attention_path = os.path.join(sample_dir, "attention_heatmap.png")
+            # input_ids[0] - убираем батч для визуализации
             create_attention_heatmap(
-                mock_attention, input_ids, model.processor, attention_path, max_tokens=50
+                mock_attention, input_ids[0], model.processor, attention_path, max_tokens=50
             )
             
             logger.info(f"✅ Пример {sample_idx + 1} обработан: {sample_dir}")
@@ -893,6 +960,7 @@ def visualize_qwen_features(
     logger.info("\n" + "="*60)
     logger.info(f"✅ Визуализация завершена! Результаты в: {output_dir}")
     logger.info("="*60)
+
 
 
 if __name__ == "__main__":
