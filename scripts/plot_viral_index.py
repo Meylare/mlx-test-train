@@ -34,7 +34,7 @@ def load_viral_indices(path: Path) -> list[float]:
 
 def main():
     parser = argparse.ArgumentParser(description="Визуализация Viral Index")
-    parser.add_argument("input", nargs="?", default="dataset_train.jsonl", help="Путь к JSONL файлу")
+    parser.add_argument("input", nargs="?", default="dataset_train_ready.jsonl", help="Путь к JSONL файлу")
     args = parser.parse_args()
 
     PROJECT_ROOT = Path(__file__).resolve().parent.parent
