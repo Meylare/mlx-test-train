@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import inspect
 import re
 from typing import Any, List, Optional
 
@@ -131,6 +132,7 @@ class DPOTrainingConfig:
     max_length: int = 4096
     max_prompt_length: int = 2048
     beta: float = 0.1
+    reference_free: bool = True
     logging_steps: int = 10
     save_steps: int = 250
     warmup_ratio: float = 0.03
@@ -214,4 +216,7 @@ def build_dpo_config(cfg: DPOTrainingConfig) -> "DPOConfig":
         report_to=cfg.report_to,
         seed=cfg.seed,
     )
+    sig = inspect.signature(DPOConfig.__init__)
+    if "reference_free" in sig.parameters:
+        kwargs["reference_free"] = cfg.reference_free
     return DPOConfig(**kwargs)

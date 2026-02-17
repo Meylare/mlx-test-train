@@ -317,6 +317,17 @@ def build_trainer(
     if "max_prompt_length" in params:
         trainer_kwargs["max_prompt_length"] = dpo_config.max_prompt_length
 
+    # On T4, deepcopy of policy as ref model often OOMs.
+    # In reference-free mode we can safely bypass ref-model creation.
+    if bool(getattr(dpo_config, "reference_free", False)):
+        try:
+            import trl.trainer.dpo_trainer as dpo_trainer_module
+
+            dpo_trainer_module.create_reference_model = lambda *_args, **_kwargs: None
+            print("reference_free=True: patched TRL create_reference_model -> None (no deepcopy).")
+        except Exception as exc:  # pragma: no cover
+            print(f"Warning: could not patch TRL create_reference_model: {exc}")
+
     return MultimodalDPOTrainer(**trainer_kwargs)
 
 

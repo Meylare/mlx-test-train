@@ -41,6 +41,7 @@
   "max_length": 1536,
   "max_prompt_length": 512,
   "beta": 0.1,
+  "reference_free": true,
   "logging_steps": 5,
   "save_steps": 100,
   "warmup_ratio": 0.05,
