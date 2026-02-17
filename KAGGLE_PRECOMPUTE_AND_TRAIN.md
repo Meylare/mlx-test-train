@@ -164,7 +164,7 @@ cd /kaggle/working/mlx-test-train
 python - << 'PY'
 import json
 cfg = json.load(open("kaggle_train_precomputed.json", "r", encoding="utf-8"))
-cfg["dataset_path"] = "/kaggle/working/pvp_precomputed_hf_smoke"
+cfg["dataset_path"] = "dataset_50vid_of_prof/pvp_precomputed_rows_smoke.pt"
 cfg["output_dir"] = "/kaggle/working/outputs/pvp_dpo_smoke"
 cfg["num_train_epochs"] = 0.02
 cfg["logging_steps"] = 1

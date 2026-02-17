@@ -424,18 +424,38 @@ def load_llm(
         load_in_4bit=load_in_4bit,
         attn_implementation=attn_implementation,
         device_map=device_map,
-        bnb_4bit_quant_type=bnb_4bit_quant_type,
-        bnb_4bit_compute_dtype=bnb_4bit_compute_dtype,
-        bnb_4bit_use_double_quant=bnb_4bit_use_double_quant,
     )
-    try:
-        model, tokenizer = FastLanguageModel.from_pretrained(**kwargs)
-    except Exception as exc:
-        if attn_implementation == "flash_attention_3":
-            kwargs["attn_implementation"] = "flash_attention_2"
-            model, tokenizer = FastLanguageModel.from_pretrained(**kwargs)
-        else:
+    if load_in_4bit:
+        kwargs["bnb_4bit_quant_type"] = bnb_4bit_quant_type
+        kwargs["bnb_4bit_compute_dtype"] = bnb_4bit_compute_dtype
+        kwargs["bnb_4bit_use_double_quant"] = bnb_4bit_use_double_quant
+
+    def _try_unsloth_load(load_kwargs: Dict[str, Any]) -> Tuple[nn.Module, Any]:
+        try:
+            model, tokenizer = FastLanguageModel.from_pretrained(**load_kwargs)
+            return model, tokenizer
+        except Exception as exc:
+            if load_kwargs.get("attn_implementation") == "flash_attention_3":
+                retry = dict(load_kwargs)
+                retry["attn_implementation"] = "flash_attention_2"
+                return FastLanguageModel.from_pretrained(**retry)
             raise exc
+
+    try:
+        model, tokenizer = _try_unsloth_load(kwargs)
+    except TypeError as exc:
+        msg = str(exc)
+        if load_in_4bit and "unexpected keyword argument 'bnb_4bit" in msg:
+            fallback_kwargs = {
+                k: v for k, v in kwargs.items() if not str(k).startswith("bnb_4bit_")
+            }
+            print(
+                "Detected unsloth/transformers incompatibility for bnb_4bit_* kwargs. "
+                "Retrying with default 4bit loader arguments."
+            )
+            model, tokenizer = _try_unsloth_load(fallback_kwargs)
+        else:
+            raise
     if hasattr(model, "config"):
         model.config.use_cache = False
     return model, tokenizer
