@@ -68,12 +68,31 @@ class PVPDataCollator:
             out[i, : tensor.numel()] = tensor
         return out
 
+    def _ensure_attention_mask(
+        self,
+        batch: Dict[str, Any],
+        ids_key: str,
+        mask_key: str,
+    ) -> None:
+        if mask_key in batch:
+            return
+        ids = batch.get(ids_key)
+        if isinstance(ids, torch.Tensor):
+            batch[mask_key] = (ids != self.tokenizer.pad_token_id).long()
+
     def __call__(self, features: List[Dict[str, Any]]) -> Dict[str, Any]:
         batch: Dict[str, Any] = {}
 
-        keys = features[0].keys()
+        keys = set()
+        for feat in features:
+            keys.update(feat.keys())
         for key in keys:
-            values = [f[key] for f in features]
+            values = [f.get(key) for f in features]
+            if all(v is None for v in values):
+                continue
+            if any(v is None for v in values):
+                # Keep only fully-populated keys to avoid ragged batches.
+                continue
             if key in {
                 "style_pixel_values",
                 "chosen_target_pixel_values",
@@ -93,7 +112,28 @@ class PVPDataCollator:
             if key.endswith("_labels"):
                 batch[key] = self._pad_1d(values, pad_value=-100)
                 continue
+            if key.endswith("_logps"):
+                # TRL expects precomputed ref log-probs as tensors.
+                scalar_tensors = []
+                for v in values:
+                    t = torch.as_tensor(v, dtype=torch.float32)
+                    if t.numel() == 0:
+                        t = torch.tensor(0.0, dtype=torch.float32)
+                    elif t.numel() != 1:
+                        t = t.reshape(-1)[0]
+                    else:
+                        t = t.reshape(())
+                    scalar_tensors.append(t)
+                batch[key] = torch.stack(scalar_tensors)
+                continue
             batch[key] = values
+
+        # TRL expects these keys for DPO concatenation.
+        if "prompt_input_ids" not in batch and "chosen_input_ids" in batch:
+            batch["prompt_input_ids"] = batch["chosen_input_ids"].clone()
+        self._ensure_attention_mask(batch, "prompt_input_ids", "prompt_attention_mask")
+        self._ensure_attention_mask(batch, "chosen_input_ids", "chosen_attention_mask")
+        self._ensure_attention_mask(batch, "rejected_input_ids", "rejected_attention_mask")
 
         return batch
 
