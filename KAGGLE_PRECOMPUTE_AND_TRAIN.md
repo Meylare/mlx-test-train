@@ -48,12 +48,15 @@ MANIFEST_FILE="/kaggle/input/datasets/meylareand/pvp-pairs-50authors/pvp_pairs_5
 TARGET="/kaggle/working/mlx-test-train/dataset_50vid_of_prof"
 
 mkdir -p "$TARGET"
-cp -r "$VIDEO_ROOT/downloads_shopping" "$TARGET/"
+# Do not copy huge videos into /kaggle/working. Use symlink to save disk.
+rm -rf "$TARGET/downloads_shopping"
+ln -s "$VIDEO_ROOT/downloads_shopping" "$TARGET/downloads_shopping"
 cp "$MANIFEST_FILE" "$TARGET/pvp_pairs_50authors.json"
 
 test -f "$TARGET/pvp_pairs_50authors.json"
 mp4_count="$(find "$TARGET/downloads_shopping" -name "*.mp4" | wc -l)"
 echo "mp4_count=$mp4_count"
+du -sh "$TARGET"
 ```
 
 ## Cell 4: Install deps
@@ -211,11 +214,17 @@ This version is RAM-safe for precompute and robust to save errors.
 set -euo pipefail
 cd /kaggle/working/mlx-test-train
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export HF_HUB_DISABLE_PROGRESS_BARS=1
+export TQDM_DISABLE=1
+export TRANSFORMERS_VERBOSITY=error
+export TOKENIZERS_PARALLELISM=false
+rm -f /kaggle/working/precompute_full.log /kaggle/working/train_full.log
 
 # Hard stop if disk is already low before full run.
+min_gb=10
 free_gb="$(df --output=avail -BG /kaggle/working | tail -n1 | tr -dc '0-9')"
-echo "free_gb=$free_gb"
-if [ "$free_gb" -lt 18 ]; then
+echo "free_gb=$free_gb min_gb=$min_gb"
+if [ "$free_gb" -lt "$min_gb" ]; then
   echo 'Not enough free disk for full run. Clean disk first.'
   exit 3
 fi
@@ -234,7 +243,8 @@ PYTHONUNBUFFERED=1 CUDA_VISIBLE_DEVICES=0,1 python precompute_pvp_vision_feature
   --style-seconds 6 --style-fps 1 \
   --target-seconds 6 --target-fps 1 \
   --flush-every-rows 8 \
-  2>&1 | tee /kaggle/working/precompute_full.log
+  > /kaggle/working/precompute_full.log 2>&1
+tail -n 120 /kaggle/working/precompute_full.log
 
 python - << 'PY'
 import json
@@ -244,6 +254,19 @@ print('rows_total:', rows)
 if rows <= 0:
     raise SystemExit('rows_total=0 after full precompute')
 PY
+
+# We train from HF parts; remove PT rows to free disk before training.
+rm -f dataset_50vid_of_prof/pvp_precomputed_rows.pt*
+df -h /kaggle/working
+
+# Optional emergency cleanup if free disk is too low before train.
+free_gb_post="$(df --output=avail -BG /kaggle/working | tail -n1 | tr -dc '0-9')"
+echo "free_gb_before_train=$free_gb_post"
+if [ "$free_gb_post" -lt 6 ]; then
+  echo "Low disk before train; removing HF cache."
+  rm -rf /root/.cache/huggingface/hub || true
+  df -h /kaggle/working
+fi
 
 echo "=== BUILD TRAIN CONFIG $(date) ==="
 python - << 'PY'
@@ -268,9 +291,10 @@ print('written /kaggle/working/kaggle_train_precomputed_runtime.json')
 PY
 
 echo "=== FULL TRAIN START $(date) ==="
-PVP_IGNORE_SAVE_ERRORS=1 PYTHONUNBUFFERED=1 CUDA_VISIBLE_DEVICES=0,1 torchrun --nproc_per_node=2 --master_port=29501 \
+PVP_SKIP_TRAINER_SAVE=1 PVP_IGNORE_SAVE_ERRORS=1 PYTHONUNBUFFERED=1 CUDA_VISIBLE_DEVICES=0,1 torchrun --nproc_per_node=2 --master_port=29501 \
   train_dpo.py /kaggle/working/kaggle_train_precomputed_runtime.json \
-  2>&1 | tee /kaggle/working/train_full.log
+  > /kaggle/working/train_full.log 2>&1
+tail -n 120 /kaggle/working/train_full.log
 
 echo "=== DONE $(date) ==="
 ```
