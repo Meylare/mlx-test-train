@@ -295,6 +295,19 @@ def _configure_precomputed_mode_from_dataset(
 
 
 class MultimodalDPOTrainer(DPOTrainer):
+    def _save_checkpoint(self, model: torch.nn.Module, trial: Any, metrics: Optional[Dict[str, float]] = None) -> None:
+        # Useful on Kaggle when disk is tight: continue training even if checkpoint save is disabled.
+        if os.environ.get("PVP_SKIP_TRAINER_SAVE", "0") == "1":
+            print("PVP_SKIP_TRAINER_SAVE=1 -> skip Trainer checkpoint save.")
+            return
+        try:
+            return super()._save_checkpoint(model, trial, metrics=metrics)
+        except Exception as exc:
+            if os.environ.get("PVP_IGNORE_SAVE_ERRORS", "0") == "1" and "No space left on device" in str(exc):
+                print(f"Warning: checkpoint save failed due to disk full, continuing: {exc}")
+                return
+            raise
+
     def concatenated_inputs(self, batch: Dict[str, Any], *args: Any, **kwargs: Any) -> Dict[str, Any]:
         concatenated_batch = super().concatenated_inputs(batch, *args, **kwargs)
 
@@ -404,9 +417,19 @@ def main() -> None:
 
     output_dir = dpo_config.output_dir
     os.makedirs(output_dir, exist_ok=True)
-    trainer.save_model(output_dir)
-    torch.save(model.resampler.state_dict(), os.path.join(output_dir, "resampler.pt"))
-    torch.save(model.projector.state_dict(), os.path.join(output_dir, "projector.pt"))
+    if os.environ.get("PVP_SKIP_FINAL_SAVE", "0") == "1":
+        print("PVP_SKIP_FINAL_SAVE=1 -> skip final model serialization.")
+        return
+
+    try:
+        trainer.save_model(output_dir)
+        torch.save(model.resampler.state_dict(), os.path.join(output_dir, "resampler.pt"))
+        torch.save(model.projector.state_dict(), os.path.join(output_dir, "projector.pt"))
+    except Exception as exc:
+        if os.environ.get("PVP_IGNORE_SAVE_ERRORS", "0") == "1" and "No space left on device" in str(exc):
+            print(f"Warning: final save failed due to disk full: {exc}")
+            return
+        raise
 
 
 if __name__ == "__main__":
