@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import collections
 import json
 import math
 import os
@@ -13,12 +14,23 @@ from einops import rearrange
 from modeling_pvp import VisionTower
 
 try:
+    from transformers import AutoImageProcessor
+except Exception as exc:  # pragma: no cover
+    AutoImageProcessor = None
+    _AUTO_IMAGE_PROCESSOR_IMPORT_ERROR = exc
+
+try:
     from torchvision.io import read_video
     from torchvision.transforms import functional as TF
 except Exception as exc:  # pragma: no cover
     read_video = None
     TF = None
     _TORCHVISION_IMPORT_ERROR = exc
+try:
+    import av  # noqa: F401
+except Exception as exc:  # pragma: no cover
+    av = None
+    _PYAV_IMPORT_ERROR = exc
 
 
 def _require_torchvision() -> None:
@@ -26,6 +38,17 @@ def _require_torchvision() -> None:
         raise ImportError(
             "torchvision is required for video decoding. Install torchvision in Kaggle runtime."
         ) from _TORCHVISION_IMPORT_ERROR
+    if av is None:
+        raise ImportError(
+            "PyAV is required for torchvision.read_video. Install with `pip install av`."
+        ) from _PYAV_IMPORT_ERROR
+
+
+def _require_auto_image_processor() -> None:
+    if AutoImageProcessor is None:
+        raise ImportError(
+            "transformers AutoImageProcessor is required for Qwen2.5-Omni vision preprocessing."
+        ) from _AUTO_IMAGE_PROCESSOR_IMPORT_ERROR
 
 
 def _parse_dtype(value: str) -> torch.dtype:
@@ -93,6 +116,7 @@ def _encode_video_frames(
     vision_tower: VisionTower,
     frames_tchw: torch.Tensor,
     vision_accepts_video: bool,
+    vision_image_processor: Optional[Any] = None,
 ) -> torch.Tensor:
     if frames_tchw.ndim != 4:
         raise ValueError(f"Expected [T, C, H, W], got {frames_tchw.shape}")
@@ -101,6 +125,46 @@ def _encode_video_frames(
     device = vision_param.device
     dtype = vision_param.dtype
     with torch.no_grad():
+        if vision_image_processor is not None:
+            # Qwen2.5-Omni expects packed vision tokens + image_grid_thw.
+            # AutoImageProcessor provides both from raw images.
+            images = [
+                (
+                    frame.clamp(0.0, 1.0)
+                    .mul(255.0)
+                    .round()
+                    .to(torch.uint8)
+                    .permute(1, 2, 0)
+                    .cpu()
+                    .numpy()
+                )
+                for frame in frames_tchw
+            ]
+            image_inputs = vision_image_processor(images=images, return_tensors="pt")
+            pixel_values = image_inputs.get("pixel_values")
+            image_grid_thw = image_inputs.get("image_grid_thw")
+            if pixel_values is None:
+                raise ValueError(
+                    f"AutoImageProcessor returned no pixel_values. keys={list(image_inputs.keys())}"
+                )
+            if image_grid_thw is None:
+                raise ValueError(
+                    f"AutoImageProcessor returned no image_grid_thw. keys={list(image_inputs.keys())}"
+                )
+
+            pixel_values = pixel_values.to(device=device, dtype=dtype)
+            image_grid_thw = image_grid_thw.to(device=device)
+            feats = vision_tower(pixel_values, image_grid_thw=image_grid_thw)
+            if feats.ndim == 2:
+                pass
+            elif feats.ndim == 3:
+                feats = rearrange(feats, "b n d -> (b n) d")
+            elif feats.ndim == 4:
+                feats = rearrange(feats, "b t n d -> (b t n) d")
+            else:
+                raise ValueError(f"Unexpected Omni features shape: {feats.shape}")
+            return feats.detach().cpu()
+
         if vision_accepts_video:
             feats = vision_tower(frames_tchw.unsqueeze(0).to(device=device, dtype=dtype))
             if feats.ndim == 4:
@@ -194,6 +258,15 @@ def run(args: argparse.Namespace) -> None:
         device_map=device_map,
     )
     vision_accepts_video = bool(args.vision_accepts_video)
+    model_type = str(getattr(getattr(vision_tower.model, "config", object()), "model_type", "")).lower()
+    vision_image_processor = None
+    if model_type == "qwen2_5_omni":
+        _require_auto_image_processor()
+        vision_image_processor = AutoImageProcessor.from_pretrained(
+            args.vision_model_name,
+            trust_remote_code=True,
+        )
+        print("Using AutoImageProcessor path for Qwen2.5-Omni (image_grid_thw enabled).")
 
     rows: List[Dict[str, Any]] = []
     skipped: List[Dict[str, Any]] = []
@@ -231,6 +304,7 @@ def run(args: argparse.Namespace) -> None:
                     vision_tower=vision_tower,
                     frames_tchw=frames,
                     vision_accepts_video=vision_accepts_video,
+                    vision_image_processor=vision_image_processor,
                 )
                 style_feats_list.append(feats)
             except Exception as exc:
@@ -316,11 +390,13 @@ def run(args: argparse.Namespace) -> None:
                     vision_tower=vision_tower,
                     frames_tchw=hit_frames,
                     vision_accepts_video=vision_accepts_video,
+                    vision_image_processor=vision_image_processor,
                 )
                 anti_feats = _encode_video_frames(
                     vision_tower=vision_tower,
                     frames_tchw=anti_frames,
                     vision_accepts_video=vision_accepts_video,
+                    vision_image_processor=vision_image_processor,
                 )
             except Exception as exc:
                 skipped.append(
@@ -406,6 +482,18 @@ def run(args: argparse.Namespace) -> None:
     summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
 
     print(json.dumps(summary, ensure_ascii=False, indent=2))
+
+    if len(rows) == 0:
+        reason_counter = collections.Counter()
+        for item in skipped:
+            reason = str(item.get("reason") or "unknown")
+            reason_counter[reason] += 1
+        top_reasons = reason_counter.most_common(5)
+        raise RuntimeError(
+            "No training rows were produced during precompute. "
+            f"Top skipped reasons: {top_reasons}. "
+            f"Check {skipped_path.as_posix()} and localPath/video availability."
+        )
 
     if args.output_hf_dir:
         from datasets import Dataset

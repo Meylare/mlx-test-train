@@ -71,7 +71,7 @@ PY
 ```bash
 %%bash
 set -euo pipefail
-pip install -q -U transformers datasets trl unsloth torchvision einops
+pip install -q -U transformers datasets trl unsloth torchvision einops av
 apt-get update -y >/dev/null
 apt-get install -y ffmpeg >/dev/null
 python - << 'PY'
@@ -79,10 +79,12 @@ import torch
 import transformers
 import datasets
 import trl
+import av
 print("torch", torch.__version__)
 print("transformers", transformers.__version__)
 print("datasets", datasets.__version__)
 print("trl", trl.__version__)
+print("av", av.__version__)
 print("cuda available", torch.cuda.is_available(), "gpu_count", torch.cuda.device_count())
 PY
 ```
@@ -96,12 +98,43 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 python - << 'PY'
 import json
+from pathlib import Path
 src = "dataset_50vid_of_prof/pvp_pairs_50authors.json"
 out = "dataset_50vid_of_prof/pvp_pairs_smoke1.json"
 d = json.load(open(src, "r", encoding="utf-8"))
-d["authors"] = d["authors"][:1]
+base = Path("/kaggle/working/mlx-test-train")
+
+def p_exists(p: str) -> bool:
+    if not p:
+        return False
+    pp = Path(p)
+    if pp.exists():
+        return True
+    pp2 = base / p
+    return pp2.exists()
+
+picked = None
+for a in d.get("authors", []):
+    style_ok = 0
+    for sv in (a.get("style_videos") or []):
+        if p_exists((sv.get("localPath") or "").strip()):
+            style_ok += 1
+    pair_ok = 0
+    for pair in (a.get("pairs") or []):
+        h = (pair.get("hit_video") or {}).get("localPath") or ""
+        r = (pair.get("anti_hit_video") or {}).get("localPath") or ""
+        if p_exists(h.strip()) and p_exists(r.strip()):
+            pair_ok += 1
+    if style_ok >= 3 and pair_ok >= 1:
+        picked = a
+        break
+
+if picked is None:
+    raise RuntimeError("Could not find any author for smoke with existing style+pair files.")
+
+d["authors"] = [picked]
 json.dump(d, open(out, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
-print("written", out, "authors", len(d["authors"]))
+print("written", out, "authors", len(d["authors"]), "picked", picked.get("author", {}).get("name"))
 PY
 
 PYTHONUNBUFFERED=1 CUDA_VISIBLE_DEVICES=0,1 python precompute_pvp_vision_features.py \

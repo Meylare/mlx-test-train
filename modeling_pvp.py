@@ -36,11 +36,8 @@ try:
 except Exception:  # pragma: no cover - optional dependency guard
     CausalLMOutputWithPast = None
 
-try:
-    from unsloth import FastLanguageModel
-except Exception as exc:  # pragma: no cover - optional dependency guard
-    FastLanguageModel = None
-    _UNSLOTH_IMPORT_ERROR = exc
+FastLanguageModel = None
+_UNSLOTH_IMPORT_ERROR: Optional[Exception] = None
 
 
 def _require_transformers() -> None:
@@ -51,6 +48,13 @@ def _require_transformers() -> None:
 
 
 def _require_unsloth() -> None:
+    global FastLanguageModel, _UNSLOTH_IMPORT_ERROR
+    if FastLanguageModel is None:
+        try:
+            from unsloth import FastLanguageModel as _FastLanguageModel
+            FastLanguageModel = _FastLanguageModel
+        except Exception as exc:  # pragma: no cover - optional dependency guard
+            _UNSLOTH_IMPORT_ERROR = exc
     if FastLanguageModel is None:
         raise ImportError(
             "unsloth is required but not installed."
@@ -210,7 +214,7 @@ class VisionTower(nn.Module):
                     return value
         raise TypeError("Vision tower output is not a tensor-like structure.")
 
-    def forward(self, pixel_values: torch.Tensor) -> torch.Tensor:
+    def forward(self, pixel_values: torch.Tensor, **kwargs: Any) -> torch.Tensor:
         """Encode images or video frames.
 
         Args:
@@ -218,14 +222,28 @@ class VisionTower(nn.Module):
         Returns:
             Vision features with shape [B, N, D] or [B, T, N, D].
         """
+        image_grid_thw = kwargs.pop("image_grid_thw", None)
+        video_grid_thw = kwargs.pop("video_grid_thw", None)
+
         if hasattr(self.model, "encode_images"):
             features = self.model.encode_images(pixel_values)
         elif hasattr(self.model, "get_image_features"):
-            features = self.model.get_image_features(pixel_values)
+            call_kwargs: Dict[str, Any] = {}
+            if image_grid_thw is not None:
+                call_kwargs["image_grid_thw"] = image_grid_thw
+            features = self.model.get_image_features(pixel_values, **call_kwargs)
         elif hasattr(self.model, "thinker") and hasattr(self.model.thinker, "get_image_features"):
-            features = self.model.thinker.get_image_features(pixel_values)
+            call_kwargs = {}
+            if image_grid_thw is not None:
+                call_kwargs["image_grid_thw"] = image_grid_thw
+            features = self.model.thinker.get_image_features(pixel_values, **call_kwargs)
         else:
-            outputs = self.model(pixel_values=pixel_values, return_dict=True)
+            call_kwargs = {}
+            if image_grid_thw is not None:
+                call_kwargs["image_grid_thw"] = image_grid_thw
+            if video_grid_thw is not None:
+                call_kwargs["video_grid_thw"] = video_grid_thw
+            outputs = self.model(pixel_values=pixel_values, return_dict=True, **call_kwargs)
             features = outputs
         return self._as_tensor(features)
 
