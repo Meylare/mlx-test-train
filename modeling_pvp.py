@@ -131,6 +131,7 @@ class VisionTower(nn.Module):
             device_map=device_map,
             trust_remote_code=trust_remote_code,
         )
+        self._stabilize_omni_visual()
         self.model.eval()
         for param in self.model.parameters():
             param.requires_grad = False
@@ -138,6 +139,20 @@ class VisionTower(nn.Module):
             self.hidden_size = _get_hidden_size(getattr(self.model, "config", object()), fallback=None)
         except ValueError:
             self.hidden_size = None
+
+    def _stabilize_omni_visual(self) -> None:
+        """Work around inconsistent Omni vision configs where fullatt indexes are missing."""
+        candidates: List[Any] = []
+        if hasattr(self.model, "visual"):
+            candidates.append(getattr(self.model, "visual"))
+        thinker = getattr(self.model, "thinker", None)
+        if thinker is not None and hasattr(thinker, "visual"):
+            candidates.append(getattr(thinker, "visual"))
+
+        for visual in candidates:
+            indexes = getattr(visual, "fullatt_block_indexes", None)
+            if indexes is None:
+                visual.fullatt_block_indexes = []
 
     def _load_model(
         self,
