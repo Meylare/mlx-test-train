@@ -44,6 +44,21 @@ def _parse_dtype(value: str) -> torch.dtype:
     return mapping[key]
 
 
+def _parse_device_map(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, (dict, int)):
+        return value
+    if not isinstance(value, str):
+        return value
+    raw = value.strip().lower()
+    if raw in {"", "none", "null"}:
+        return None
+    if raw.isdigit():
+        return int(raw)
+    return value
+
+
 def _sample_video_frames(
     video_path: Path,
     seconds: float,
@@ -165,10 +180,18 @@ def run(args: argparse.Namespace) -> None:
         )
 
     dtype = _parse_dtype(args.torch_dtype)
+    if dtype == torch.bfloat16 and torch.cuda.is_available() and not torch.cuda.is_bf16_supported():
+        print("BF16 is not supported on this GPU. Falling back to FP16 for vision precompute.")
+        dtype = torch.float16
+
+    device_map = _parse_device_map(args.device_map)
+    if args.use_torchrun_sharding and (device_map == "auto" or device_map is None):
+        device_map = int(os.environ.get("LOCAL_RANK", "0"))
+
     vision_tower = VisionTower(
         model_name=args.vision_model_name,
         torch_dtype=dtype,
-        device_map=args.device_map,
+        device_map=device_map,
     )
     vision_accepts_video = bool(args.vision_accepts_video)
 
@@ -360,6 +383,8 @@ def run(args: argparse.Namespace) -> None:
         "target_seconds": args.target_seconds,
         "target_fps": args.target_fps,
         "image_size": args.image_size,
+        "device_map": device_map,
+        "torch_dtype_runtime": str(dtype),
         "output_pt": str(output_pt.as_posix()),
         "skipped_count": len(skipped),
     }

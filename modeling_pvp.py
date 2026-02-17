@@ -7,9 +7,27 @@ from einops import rearrange
 from torch import nn
 
 try:
-    from transformers import AutoModel
+    import transformers as _transformers_module
+    from transformers import AutoConfig, AutoModel
+    try:
+        from transformers import AutoModelForImageTextToText
+    except Exception:  # pragma: no cover - optional API across transformers versions
+        AutoModelForImageTextToText = None
+    try:
+        from transformers import AutoModelForVision2Seq
+    except Exception:  # pragma: no cover - optional API across transformers versions
+        AutoModelForVision2Seq = None
+    try:
+        from transformers import AutoModelForCausalLM
+    except Exception:  # pragma: no cover - optional API across transformers versions
+        AutoModelForCausalLM = None
 except Exception as exc:  # pragma: no cover - optional dependency guard
+    _transformers_module = None
+    AutoConfig = None
     AutoModel = None
+    AutoModelForImageTextToText = None
+    AutoModelForVision2Seq = None
+    AutoModelForCausalLM = None
     _TRANSFORMERS_IMPORT_ERROR = exc
 
 try:
@@ -25,7 +43,7 @@ except Exception as exc:  # pragma: no cover - optional dependency guard
 
 
 def _require_transformers() -> None:
-    if AutoModel is None:
+    if _transformers_module is None or AutoModel is None or AutoConfig is None:
         raise ImportError(
             "transformers is required but not installed."
         ) from _TRANSFORMERS_IMPORT_ERROR
@@ -39,11 +57,51 @@ def _require_unsloth() -> None:
 
 
 def _get_hidden_size(config: Any, fallback: Optional[int] = None) -> int:
-    for name in ("hidden_size", "vision_hidden_size", "mm_hidden_size", "embed_dim", "d_model"):
+    candidate_names = (
+        "hidden_size",
+        "vision_hidden_size",
+        "mm_hidden_size",
+        "embed_dim",
+        "d_model",
+    )
+
+    for name in candidate_names:
         if hasattr(config, name):
             value = getattr(config, name)
             if isinstance(value, int) and value > 0:
                 return value
+
+    nested_attrs = (
+        "vision_config",
+        "text_config",
+        "llm_config",
+        "language_config",
+        "model_config",
+        "thinker_config",
+        "visual_config",
+    )
+    for attr in nested_attrs:
+        nested = getattr(config, attr, None)
+        if nested is None:
+            continue
+        try:
+            return _get_hidden_size(nested, fallback=None)
+        except ValueError:
+            continue
+
+    if hasattr(config, "to_dict"):
+        cfg_dict = config.to_dict()
+        if isinstance(cfg_dict, dict):
+            stack: List[dict] = [cfg_dict]
+            while stack:
+                node = stack.pop()
+                for k, v in node.items():
+                    if isinstance(v, dict):
+                        stack.append(v)
+                        continue
+                    if k in candidate_names and isinstance(v, int) and v > 0:
+                        return v
+
     if fallback is None:
         raise ValueError("Unable to infer hidden size from config; provide fallback.")
     return fallback
@@ -61,8 +119,9 @@ class VisionTower(nn.Module):
     ) -> None:
         super().__init__()
         _require_transformers()
-        self.model = AutoModel.from_pretrained(
-            model_name,
+        self.model_name = model_name
+        self.model = self._load_model(
+            model_name=model_name,
             torch_dtype=torch_dtype,
             device_map=device_map,
             trust_remote_code=trust_remote_code,
@@ -70,6 +129,85 @@ class VisionTower(nn.Module):
         self.model.eval()
         for param in self.model.parameters():
             param.requires_grad = False
+        try:
+            self.hidden_size = _get_hidden_size(getattr(self.model, "config", object()), fallback=None)
+        except ValueError:
+            self.hidden_size = None
+
+    def _load_model(
+        self,
+        model_name: str,
+        torch_dtype: torch.dtype,
+        device_map: Optional[str],
+        trust_remote_code: bool,
+    ) -> nn.Module:
+        load_kwargs = dict(
+            torch_dtype=torch_dtype,
+            device_map=device_map,
+            trust_remote_code=trust_remote_code,
+        )
+        config = AutoConfig.from_pretrained(model_name, trust_remote_code=trust_remote_code)
+        model_type = str(getattr(config, "model_type", "")).lower()
+
+        candidate_loaders: List[Tuple[str, Any, Dict[str, Any]]] = []
+
+        if model_type == "qwen2_5_omni":
+            thinker_cls = getattr(_transformers_module, "Qwen2_5OmniThinkerForConditionalGeneration", None)
+            omni_cls = getattr(_transformers_module, "Qwen2_5OmniForConditionalGeneration", None)
+            if thinker_cls is not None:
+                candidate_loaders.append(("Qwen2_5OmniThinkerForConditionalGeneration", thinker_cls, {}))
+            if omni_cls is not None:
+                candidate_loaders.append(
+                    (
+                        "Qwen2_5OmniForConditionalGeneration",
+                        omni_cls,
+                        {"enable_audio_output": False},
+                    )
+                )
+
+        if AutoModelForImageTextToText is not None:
+            candidate_loaders.append(("AutoModelForImageTextToText", AutoModelForImageTextToText, {}))
+        if AutoModelForVision2Seq is not None:
+            candidate_loaders.append(("AutoModelForVision2Seq", AutoModelForVision2Seq, {}))
+        if AutoModelForCausalLM is not None:
+            candidate_loaders.append(("AutoModelForCausalLM", AutoModelForCausalLM, {}))
+        candidate_loaders.append(("AutoModel", AutoModel, {}))
+
+        errors: List[str] = []
+        for loader_name, loader_cls, extra_kwargs in candidate_loaders:
+            try:
+                model = loader_cls.from_pretrained(
+                    model_name,
+                    **load_kwargs,
+                    **extra_kwargs,
+                )
+                self.loader_name = loader_name
+                return model
+            except Exception as exc:
+                errors.append(f"{loader_name}: {type(exc).__name__}: {exc}")
+
+        joined = "\n".join(errors)
+        raise ValueError(
+            f"Failed to load vision model '{model_name}'. Tried loaders:\n{joined}"
+        )
+
+    @staticmethod
+    def _as_tensor(features: Any) -> torch.Tensor:
+        if isinstance(features, torch.Tensor):
+            return features
+        if hasattr(features, "last_hidden_state"):
+            value = getattr(features, "last_hidden_state")
+            if isinstance(value, torch.Tensor):
+                return value
+        if isinstance(features, (tuple, list)) and len(features) > 0:
+            head = features[0]
+            if isinstance(head, torch.Tensor):
+                return head
+            if hasattr(head, "last_hidden_state"):
+                value = getattr(head, "last_hidden_state")
+                if isinstance(value, torch.Tensor):
+                    return value
+        raise TypeError("Vision tower output is not a tensor-like structure.")
 
     def forward(self, pixel_values: torch.Tensor) -> torch.Tensor:
         """Encode images or video frames.
@@ -83,17 +221,12 @@ class VisionTower(nn.Module):
             features = self.model.encode_images(pixel_values)
         elif hasattr(self.model, "get_image_features"):
             features = self.model.get_image_features(pixel_values)
+        elif hasattr(self.model, "thinker") and hasattr(self.model.thinker, "get_image_features"):
+            features = self.model.thinker.get_image_features(pixel_values)
         else:
             outputs = self.model(pixel_values=pixel_values, return_dict=True)
-            if hasattr(outputs, "last_hidden_state"):
-                features = outputs.last_hidden_state
-            elif isinstance(outputs, (tuple, list)):
-                features = outputs[0]
-            else:
-                features = outputs
-        if not isinstance(features, torch.Tensor):
-            raise TypeError("Vision tower must return a torch.Tensor.")
-        return features
+            features = outputs
+        return self._as_tensor(features)
 
 
 class PerceiverBlock(nn.Module):
