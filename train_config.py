@@ -133,6 +133,7 @@ class DPOTrainingConfig:
     max_prompt_length: int = 2048
     beta: float = 0.1
     reference_free: bool = True
+    precompute_ref_log_probs: bool = True
     logging_steps: int = 10
     save_steps: int = 250
     warmup_ratio: float = 0.03
@@ -219,4 +220,6 @@ def build_dpo_config(cfg: DPOTrainingConfig) -> "DPOConfig":
     sig = inspect.signature(DPOConfig.__init__)
     if "reference_free" in sig.parameters:
         kwargs["reference_free"] = cfg.reference_free
+    if "precompute_ref_log_probs" in sig.parameters:
+        kwargs["precompute_ref_log_probs"] = cfg.precompute_ref_log_probs
     return DPOConfig(**kwargs)

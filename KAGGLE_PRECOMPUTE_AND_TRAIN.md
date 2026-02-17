@@ -180,6 +180,7 @@ cfg["bnb_4bit_compute_dtype"] = "float16"
 cfg["bf16"] = False
 cfg["fp16"] = True
 cfg["reference_free"] = True
+cfg["precompute_ref_log_probs"] = True
 json.dump(cfg, open("/kaggle/working/kaggle_train_precomputed_smoke.json", "w", encoding="utf-8"), ensure_ascii=False, indent=2)
 print("written /kaggle/working/kaggle_train_precomputed_smoke.json")
 PY
@@ -229,6 +230,7 @@ cfg["bnb_4bit_compute_dtype"] = "float16"
 cfg["bf16"] = False
 cfg["fp16"] = True
 cfg["reference_free"] = True
+cfg["precompute_ref_log_probs"] = True
 json.dump(cfg, open("/kaggle/working/kaggle_train_precomputed_runtime.json", "w", encoding="utf-8"), ensure_ascii=False, indent=2)
 print("written /kaggle/working/kaggle_train_precomputed_runtime.json")
 PY
