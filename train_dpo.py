@@ -297,6 +297,9 @@ def build_trainer(
     dpo_config: Any,
     train_dataset: Dataset,
 ) -> DPOTrainer:
+    if not hasattr(model, "warnings_issued"):
+        model.warnings_issued = {}
+
     trainer_kwargs: Dict[str, Any] = dict(
         model=model,
         ref_model=None,

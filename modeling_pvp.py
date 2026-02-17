@@ -518,6 +518,8 @@ class PVPModel(nn.Module):
         self.vision_accepts_video = vision_accepts_video
         self.fixed_image_size = fixed_image_size
         self.config = getattr(llm, "config", None)
+        # TRL DPOTrainer expects this field on model instances.
+        self.warnings_issued: Dict[str, bool] = {}
         self._align_multimodal_modules_to_llm()
 
     @classmethod
