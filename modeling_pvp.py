@@ -518,6 +518,24 @@ class PVPModel(nn.Module):
             "target_pixel_values must have shape [B, T, C, H, W] or [B, C, H, W]."
         )
 
+    def _prepare_style_features(self, style_vision_features: torch.Tensor) -> torch.Tensor:
+        if style_vision_features.ndim == 4:
+            return rearrange(style_vision_features, "b s n d -> b (s n) d")
+        if style_vision_features.ndim == 3:
+            return style_vision_features
+        raise ValueError(
+            "style_vision_features must have shape [B, S, N, D] or [B, N, D]."
+        )
+
+    def _prepare_target_features(self, target_vision_features: torch.Tensor) -> torch.Tensor:
+        if target_vision_features.ndim == 4:
+            return rearrange(target_vision_features, "b t n d -> b (t n) d")
+        if target_vision_features.ndim == 3:
+            return target_vision_features
+        raise ValueError(
+            "target_vision_features must have shape [B, N, D] or [B, T, N, D]."
+        )
+
     def forward(
         self,
         input_ids: Optional[torch.Tensor] = None,
@@ -525,6 +543,8 @@ class PVPModel(nn.Module):
         labels: Optional[torch.Tensor] = None,
         style_pixel_values: Optional[torch.Tensor] = None,
         target_pixel_values: Optional[torch.Tensor] = None,
+        style_vision_features: Optional[torch.Tensor] = None,
+        target_vision_features: Optional[torch.Tensor] = None,
         inputs_embeds: Optional[torch.Tensor] = None,
         **kwargs: Any,
     ) -> Any:
@@ -533,6 +553,8 @@ class PVPModel(nn.Module):
         Args:
             style_pixel_values: Style videos, shape [B, S, T, C, H, W], S=20.
             target_pixel_values: Target video, shape [B, T, C, H, W] or [B, 1, T, C, H, W].
+            style_vision_features: Precomputed style features, shape [B, S, N, D] or [B, N, D].
+            target_vision_features: Precomputed target features, shape [B, N, D] or [B, T, N, D].
             input_ids: Text tokens, shape [B, L].
             attention_mask: Mask for tokens, shape [B, L] or [B, L+M].
             labels: Labels for LM loss, shape [B, L] or [B, L+M].
@@ -541,14 +563,30 @@ class PVPModel(nn.Module):
         """
         style_alias = kwargs.pop("concatenated_style_pixel_values", None)
         target_alias = kwargs.pop("concatenated_target_pixel_values", None)
+        style_feat_alias = kwargs.pop("concatenated_style_vision_features", None)
+        target_feat_alias = kwargs.pop("concatenated_target_vision_features", None)
         chosen_target = kwargs.pop("chosen_target_pixel_values", None)
         rejected_target = kwargs.pop("rejected_target_pixel_values", None)
+        chosen_target_feats = kwargs.pop("chosen_target_vision_features", None)
+        rejected_target_feats = kwargs.pop("rejected_target_vision_features", None)
         pixel_values_alias = kwargs.pop("pixel_values", None)
 
         if style_pixel_values is None and style_alias is not None:
             style_pixel_values = style_alias
+        if style_vision_features is None and style_feat_alias is not None:
+            style_vision_features = style_feat_alias
 
-        if target_pixel_values is None:
+        if target_vision_features is None:
+            if target_feat_alias is not None:
+                target_vision_features = target_feat_alias
+            elif chosen_target_feats is not None and rejected_target_feats is not None:
+                target_vision_features = torch.cat([chosen_target_feats, rejected_target_feats], dim=0)
+            elif chosen_target_feats is not None:
+                target_vision_features = chosen_target_feats
+            elif rejected_target_feats is not None:
+                target_vision_features = rejected_target_feats
+
+        if target_pixel_values is None and target_vision_features is None:
             if target_alias is not None:
                 target_pixel_values = target_alias
             elif pixel_values_alias is not None:
@@ -565,8 +603,12 @@ class PVPModel(nn.Module):
             batch_size_hint = input_ids.size(0)
         elif inputs_embeds is not None:
             batch_size_hint = inputs_embeds.size(0)
+        elif target_vision_features is not None:
+            batch_size_hint = target_vision_features.size(0)
         elif target_pixel_values is not None:
             batch_size_hint = target_pixel_values.size(0)
+        elif style_vision_features is not None:
+            batch_size_hint = style_vision_features.size(0)
 
         if style_pixel_values is not None and batch_size_hint is not None:
             style_batch = style_pixel_values.size(0)
@@ -580,11 +622,31 @@ class PVPModel(nn.Module):
                         f"text/target batch {batch_size_hint}."
                     )
 
+        if style_vision_features is not None and batch_size_hint is not None:
+            style_feat_batch = style_vision_features.size(0)
+            if style_feat_batch != batch_size_hint:
+                if batch_size_hint % style_feat_batch == 0:
+                    repeats = batch_size_hint // style_feat_batch
+                    style_vision_features = torch.cat([style_vision_features] * repeats, dim=0)
+                else:
+                    raise ValueError(
+                        f"style_vision_features batch {style_feat_batch} is incompatible with "
+                        f"text/target batch {batch_size_hint}."
+                    )
+
         if target_pixel_values is not None and batch_size_hint is not None:
             target_batch = target_pixel_values.size(0)
             if target_batch != batch_size_hint:
                 raise ValueError(
                     f"target_pixel_values batch {target_batch} is incompatible with "
+                    f"text batch {batch_size_hint}."
+                )
+
+        if target_vision_features is not None and batch_size_hint is not None:
+            target_feat_batch = target_vision_features.size(0)
+            if target_feat_batch != batch_size_hint:
+                raise ValueError(
+                    f"target_vision_features batch {target_feat_batch} is incompatible with "
                     f"text batch {batch_size_hint}."
                 )
 
@@ -594,7 +656,16 @@ class PVPModel(nn.Module):
         inputs_embeds_provided = inputs_embeds is not None
         labels_provided = labels is not None
         mm_embeds: Optional[torch.Tensor] = None
-        if style_pixel_values is not None:
+        if style_vision_features is not None:
+            style_context = self._prepare_style_features(style_vision_features)
+            style_context = style_context.to(
+                device=self.resampler.latents.device,
+                dtype=self.resampler.latents.dtype,
+            )
+            style_tokens = self.resampler(style_context)
+            style_embeds = self.projector(style_tokens)
+            mm_embeds = style_embeds
+        elif style_pixel_values is not None:
             style_feats = self._encode_style(style_pixel_values)
             style_context = rearrange(style_feats, "b s n d -> b (s n) d")
             style_context = style_context.to(
@@ -605,7 +676,19 @@ class PVPModel(nn.Module):
             style_embeds = self.projector(style_tokens)
             mm_embeds = style_embeds
 
-        if target_pixel_values is not None:
+        if target_vision_features is not None:
+            target_feats = self._prepare_target_features(target_vision_features)
+            projector_param = next(self.projector.parameters())
+            target_feats = target_feats.to(
+                device=projector_param.device,
+                dtype=projector_param.dtype,
+            )
+            target_embeds = self.projector(target_feats)
+            if mm_embeds is None:
+                mm_embeds = target_embeds
+            else:
+                mm_embeds = torch.cat([mm_embeds, target_embeds], dim=1)
+        elif target_pixel_values is not None:
             target_feats = self._encode_target(target_pixel_values)
             projector_param = next(self.projector.parameters())
             target_feats = target_feats.to(

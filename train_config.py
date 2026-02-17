@@ -58,6 +58,21 @@ def _parse_fixed_image_size(value: Any) -> Optional[tuple[int, int]]:
     )
 
 
+def _parse_device_map(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, (dict, int)):
+        return value
+    if not isinstance(value, str):
+        raise TypeError(f"Unsupported device_map value type: {type(value).__name__}.")
+    normalized = value.strip().lower()
+    if normalized in {"", "none", "null"}:
+        return None
+    if normalized.isdigit():
+        return int(normalized)
+    return value
+
+
 @dataclass
 class PVPModelConfig:
     vision_model_name: str = "Qwen/Qwen2.5-Omni-7B"
@@ -69,7 +84,7 @@ class PVPModelConfig:
     bnb_4bit_quant_type: str = "nf4"
     bnb_4bit_compute_dtype: str = "bfloat16"
     bnb_4bit_use_double_quant: bool = True
-    device_map: str = "auto"
+    device_map: Any = "auto"
     num_style_tokens: int = 16
     perceiver_depth: int = 6
     perceiver_heads: int = 8
@@ -81,6 +96,7 @@ class PVPModelConfig:
     def __post_init__(self) -> None:
         self.torch_dtype = _parse_torch_dtype(self.torch_dtype)
         self.bnb_4bit_compute_dtype = _parse_torch_dtype(self.bnb_4bit_compute_dtype)
+        self.device_map = _parse_device_map(self.device_map)
         self.fixed_image_size = _parse_fixed_image_size(self.fixed_image_size)
 
 
@@ -122,6 +138,7 @@ class DPOTrainingConfig:
     bf16: bool = True
     fp16: bool = False
     gradient_checkpointing: bool = True
+    ddp_find_unused_parameters: Optional[bool] = False
     remove_unused_columns: bool = False
     report_to: Optional[str] = None
     seed: int = 42
@@ -172,7 +189,7 @@ def build_pvp_model(
 def build_dpo_config(cfg: DPOTrainingConfig) -> "DPOConfig":
     from trl import DPOConfig
 
-    return DPOConfig(
+    kwargs = dict(
         output_dir=cfg.output_dir,
         per_device_train_batch_size=cfg.per_device_train_batch_size,
         per_device_eval_batch_size=cfg.per_device_eval_batch_size,
@@ -190,7 +207,9 @@ def build_dpo_config(cfg: DPOTrainingConfig) -> "DPOConfig":
         bf16=cfg.bf16,
         fp16=cfg.fp16,
         gradient_checkpointing=cfg.gradient_checkpointing,
+        ddp_find_unused_parameters=cfg.ddp_find_unused_parameters,
         remove_unused_columns=cfg.remove_unused_columns,
         report_to=cfg.report_to,
         seed=cfg.seed,
     )
+    return DPOConfig(**kwargs)

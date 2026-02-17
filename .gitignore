@@ -1,0 +1,35 @@
+# Python caches / compiled files
+__pycache__/
+*.py[cod]
+*.pyd
+*.pyo
+
+# Editor / IDE
+.vscode/
+.idea/
+.ipynb_checkpoints/
+
+# Logs / local outputs
+*.log
+outputs/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Large binary artifacts
+*.pt
+*.bin
+*.safetensors
+*.mp4
+*.mkv
+*.webm
+*.avi
+*.mov
+
+# Raw data folders
+dataset/
+dataset_50vid_of_prof/
+*_test.tmp
+
+# If you need to version a manifest, keep a copy outside dataset_50vid_of_prof/

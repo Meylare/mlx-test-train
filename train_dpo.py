@@ -20,6 +20,34 @@ from train_config import (
 )
 
 
+def _configure_distributed_runtime(
+    model_args: PVPModelConfig,
+    training_args: DPOTrainingConfig,
+) -> None:
+    world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+    rank = int(os.environ.get("RANK", "0"))
+    if world_size <= 1:
+        return
+
+    if torch.cuda.is_available():
+        torch.cuda.set_device(local_rank)
+
+    # In DDP each process must own exactly one GPU.
+    if model_args.device_map in (None, "auto"):
+        model_args.device_map = local_rank
+
+    if training_args.ddp_find_unused_parameters is None:
+        training_args.ddp_find_unused_parameters = False
+
+    if rank == 0:
+        print(
+            f"DDP enabled: world_size={world_size}, "
+            f"device_map={model_args.device_map}, "
+            f"ddp_find_unused_parameters={training_args.ddp_find_unused_parameters}"
+        )
+
+
 @dataclass
 class ScriptConfig:
     dataset_path: Optional[str] = None
@@ -49,6 +77,9 @@ class PVPDataCollator:
                 "style_pixel_values",
                 "chosen_target_pixel_values",
                 "rejected_target_pixel_values",
+                "style_vision_features",
+                "chosen_target_vision_features",
+                "rejected_target_vision_features",
             }:
                 batch[key] = torch.stack([torch.as_tensor(v) for v in values])
                 continue
@@ -115,6 +146,12 @@ def load_train_dataset(script_cfg: ScriptConfig, model_cfg: PVPModelConfig) -> D
     if not os.path.exists(script_cfg.dataset_path):
         raise FileNotFoundError(f"Dataset path does not exist: {script_cfg.dataset_path}")
 
+    if script_cfg.dataset_path.endswith(".pt"):
+        rows = torch.load(script_cfg.dataset_path, map_location="cpu")
+        if not isinstance(rows, list):
+            raise ValueError("PT dataset must be a list of row dicts.")
+        return Dataset.from_list(rows)
+
     return load_from_disk(script_cfg.dataset_path)
 
 
@@ -134,6 +171,21 @@ class MultimodalDPOTrainer(DPOTrainer):
         if style is not None:
             concatenated_batch["concatenated_style_pixel_values"] = torch.cat(
                 [style, style],
+                dim=0,
+            )
+
+        chosen_target_feats = batch.get("chosen_target_vision_features")
+        rejected_target_feats = batch.get("rejected_target_vision_features")
+        if chosen_target_feats is not None and rejected_target_feats is not None:
+            concatenated_batch["concatenated_target_vision_features"] = torch.cat(
+                [chosen_target_feats, rejected_target_feats],
+                dim=0,
+            )
+
+        style_feats = batch.get("style_vision_features")
+        if style_feats is not None:
+            concatenated_batch["concatenated_style_vision_features"] = torch.cat(
+                [style_feats, style_feats],
                 dim=0,
             )
 
@@ -178,6 +230,7 @@ def main() -> None:
     else:
         model_args, lora_args, training_args, script_args = parser.parse_args_into_dataclasses()
 
+    _configure_distributed_runtime(model_args, training_args)
     set_seed(training_args.seed)
     dpo_config = build_dpo_config(training_args)
     dpo_config.remove_unused_columns = False
