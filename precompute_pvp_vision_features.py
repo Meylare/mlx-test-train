@@ -259,8 +259,9 @@ def run(args: argparse.Namespace) -> None:
     )
     vision_accepts_video = bool(args.vision_accepts_video)
     model_type = str(getattr(getattr(vision_tower.model, "config", object()), "model_type", "")).lower()
+    print(f"Vision model_type detected: {model_type}")
     vision_image_processor = None
-    if model_type == "qwen2_5_omni":
+    if ("qwen2_5_omni" in model_type) or ("qwen2.5-omni" in str(args.vision_model_name).lower()):
         _require_auto_image_processor()
         vision_image_processor = AutoImageProcessor.from_pretrained(
             args.vision_model_name,
