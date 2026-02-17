@@ -175,6 +175,11 @@ cfg["per_device_train_batch_size"] = 1
 cfg["gradient_accumulation_steps"] = 2
 cfg["skip_vision_tower"] = True
 cfg["vision_hidden_size"] = None
+cfg["torch_dtype"] = "float16"
+cfg["bnb_4bit_compute_dtype"] = "float16"
+cfg["bf16"] = False
+cfg["fp16"] = True
+cfg["reference_free"] = True
 json.dump(cfg, open("/kaggle/working/kaggle_train_precomputed_smoke.json", "w", encoding="utf-8"), ensure_ascii=False, indent=2)
 print("written /kaggle/working/kaggle_train_precomputed_smoke.json")
 PY
@@ -219,6 +224,11 @@ cfg["dataset_path"] = "/kaggle/working/pvp_precomputed_hf.part*"
 cfg["output_dir"] = "/kaggle/working/outputs/pvp_dpo_precomputed"
 cfg["skip_vision_tower"] = True
 cfg["vision_hidden_size"] = None
+cfg["torch_dtype"] = "float16"
+cfg["bnb_4bit_compute_dtype"] = "float16"
+cfg["bf16"] = False
+cfg["fp16"] = True
+cfg["reference_free"] = True
 json.dump(cfg, open("/kaggle/working/kaggle_train_precomputed_runtime.json", "w", encoding="utf-8"), ensure_ascii=False, indent=2)
 print("written /kaggle/working/kaggle_train_precomputed_runtime.json")
 PY
