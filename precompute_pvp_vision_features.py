@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import argparse
 import collections
+import gc
 import json
 import math
 import os
+import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -89,7 +91,16 @@ def _sample_video_frames(
     image_size: int,
 ) -> torch.Tensor:
     _require_torchvision()
-    frames, _, info = read_video(str(video_path), pts_unit="sec")
+    read_kwargs: Dict[str, Any] = {"pts_unit": "sec"}
+    if seconds > 0:
+        # Decode only the requested prefix to reduce host RAM pressure.
+        read_kwargs["start_pts"] = 0.0
+        read_kwargs["end_pts"] = float(seconds)
+    try:
+        frames, _, info = read_video(str(video_path), **read_kwargs)
+    except TypeError:
+        # Fallback for torchvision variants that do not support start/end args.
+        frames, _, info = read_video(str(video_path), pts_unit="sec")
     if frames.ndim != 4 or frames.size(0) == 0:
         raise ValueError(f"No readable frames in {video_path}")
 
@@ -269,9 +280,79 @@ def run(args: argparse.Namespace) -> None:
         )
         print("Using AutoImageProcessor path for Qwen2.5-Omni (image_grid_thw enabled).")
 
-    rows: List[Dict[str, Any]] = []
+    shard_tag = ""
+    if num_shards > 1:
+        shard_tag = f".shard{shard_index:02d}of{num_shards:02d}"
+
+    output_pt = Path(args.output_pt)
+    if shard_tag:
+        output_pt = output_pt.with_name(f"{output_pt.stem}{shard_tag}{output_pt.suffix}")
+    output_pt.parent.mkdir(parents=True, exist_ok=True)
+
+    output_hf_dir: Optional[Path] = None
+    if args.output_hf_dir:
+        output_hf_dir = Path(args.output_hf_dir)
+        if shard_tag:
+            output_hf_dir = output_hf_dir.with_name(f"{output_hf_dir.name}{shard_tag}")
+        output_hf_dir.parent.mkdir(parents=True, exist_ok=True)
+
+    flush_every_rows = max(0, int(args.flush_every_rows))
+    rows_buffer: List[Dict[str, Any]] = []
+    rows_total = 0
+    rows_buffer_max = 0
+    output_pt_parts: List[str] = []
+    output_hf_parts: List[str] = []
+    output_part_index = 0
     skipped: List[Dict[str, Any]] = []
-    style_cache: Dict[str, torch.Tensor] = {}
+    authors_with_style_cache = 0
+
+    hf_dataset_cls = None
+    if output_hf_dir is not None:
+        from datasets import Dataset as _HFDataset
+
+        hf_dataset_cls = _HFDataset
+
+    def _flush_rows_if_needed(force: bool = False) -> None:
+        nonlocal output_part_index, rows_total, rows_buffer_max
+        if not rows_buffer:
+            return
+        if not force and flush_every_rows <= 0:
+            return
+        if not force and len(rows_buffer) < flush_every_rows:
+            return
+
+        rows_buffer_max = max(rows_buffer_max, len(rows_buffer))
+        if flush_every_rows > 0:
+            part_tag = f".part{output_part_index:05d}"
+            output_pt_chunk = output_pt.with_name(f"{output_pt.stem}{part_tag}{output_pt.suffix}")
+        else:
+            part_tag = ""
+            output_pt_chunk = output_pt
+
+        torch.save(rows_buffer, output_pt_chunk)
+        output_pt_parts.append(output_pt_chunk.as_posix())
+
+        if output_hf_dir is not None:
+            hf_rows = [_to_hf_row(x) for x in rows_buffer]
+            ds = hf_dataset_cls.from_list(hf_rows)
+            if flush_every_rows > 0:
+                output_hf_chunk = output_hf_dir.with_name(f"{output_hf_dir.name}{part_tag}")
+            else:
+                output_hf_chunk = output_hf_dir
+            if output_hf_chunk.exists():
+                shutil.rmtree(output_hf_chunk, ignore_errors=True)
+            output_hf_chunk.mkdir(parents=True, exist_ok=True)
+            ds.save_to_disk(str(output_hf_chunk))
+            output_hf_parts.append(output_hf_chunk.as_posix())
+            del ds
+            del hf_rows
+
+        rows_total += len(rows_buffer)
+        rows_buffer.clear()
+        output_part_index += 1
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     target_style_count = int(
         manifest.get("meta", {}).get("style_per_author", args.style_videos_per_author)
@@ -308,6 +389,7 @@ def run(args: argparse.Namespace) -> None:
                     vision_image_processor=vision_image_processor,
                 )
                 style_feats_list.append(feats)
+                del frames
             except Exception as exc:
                 skipped.append(
                     {
@@ -343,7 +425,7 @@ def run(args: argparse.Namespace) -> None:
             continue
 
         style_tensor = torch.stack(aligned_style, dim=0).to(torch.float16).contiguous()
-        style_cache[author_name] = style_tensor
+        authors_with_style_cache += 1
 
         for pair in author_row.get("pairs") or []:
             hit = pair.get("hit_video") or {}
@@ -399,6 +481,8 @@ def run(args: argparse.Namespace) -> None:
                     vision_accepts_video=vision_accepts_video,
                     vision_image_processor=vision_image_processor,
                 )
+                del hit_frames
+                del anti_frames
             except Exception as exc:
                 skipped.append(
                     {
@@ -424,35 +508,48 @@ def run(args: argparse.Namespace) -> None:
                 )
                 continue
 
-            rows.append(
+            rows_buffer.append(
                 {
                     "prompt": _build_prompt(author_name),
                     "chosen": "VIRAL",
                     "rejected": "NOT_VIRAL",
-                    "style_vision_features": style_cache[author_name],
+                    "style_vision_features": style_tensor,
                     "chosen_target_vision_features": hit_feats.to(torch.float16).contiguous(),
                     "rejected_target_vision_features": anti_feats.to(torch.float16).contiguous(),
                     "author_name": author_name,
                     "pair_index": int(pair.get("pair_index") or 0),
                 }
             )
+            del hit_feats
+            del anti_feats
+            _flush_rows_if_needed(force=False)
 
-    shard_tag = ""
-    if num_shards > 1:
-        shard_tag = f".shard{shard_index:02d}of{num_shards:02d}"
+        del style_tensor
+        del style_feats_list
+        del aligned_style
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
-    output_pt = Path(args.output_pt)
-    if shard_tag:
-        output_pt = output_pt.with_name(f"{output_pt.stem}{shard_tag}{output_pt.suffix}")
-    output_pt.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(rows, output_pt)
+    _flush_rows_if_needed(force=True)
+
+    output_pt_summary = output_pt.as_posix()
+    if flush_every_rows > 0:
+        output_pt_summary = output_pt.with_name(
+            f"{output_pt.stem}.part*{output_pt.suffix}"
+        ).as_posix()
+    output_hf_summary = None
+    if output_hf_dir is not None:
+        output_hf_summary = output_hf_dir.as_posix()
+        if flush_every_rows > 0:
+            output_hf_summary = output_hf_dir.with_name(f"{output_hf_dir.name}.part*").as_posix()
 
     summary = {
         "manifest": str(manifest_path.as_posix()),
-        "rows_total": len(rows),
+        "rows_total": rows_total,
         "authors_in_manifest": len(authors_all),
         "authors_in_shard": len(authors),
-        "authors_with_style_cache": len(style_cache),
+        "authors_with_style_cache": authors_with_style_cache,
         "num_shards": num_shards,
         "shard_index": shard_index,
         "style_seconds": args.style_seconds,
@@ -462,7 +559,12 @@ def run(args: argparse.Namespace) -> None:
         "image_size": args.image_size,
         "device_map": device_map,
         "torch_dtype_runtime": str(dtype),
-        "output_pt": str(output_pt.as_posix()),
+        "output_pt": output_pt_summary,
+        "output_pt_parts": output_pt_parts,
+        "output_hf_dir": output_hf_summary,
+        "output_hf_parts": output_hf_parts,
+        "flush_every_rows": flush_every_rows,
+        "max_rows_buffered": rows_buffer_max,
         "skipped_count": len(skipped),
     }
 
@@ -484,7 +586,7 @@ def run(args: argparse.Namespace) -> None:
 
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 
-    if len(rows) == 0:
+    if rows_total == 0:
         reason_counter = collections.Counter()
         for item in skipped:
             reason = str(item.get("reason") or "unknown")
@@ -495,18 +597,6 @@ def run(args: argparse.Namespace) -> None:
             f"Top skipped reasons: {top_reasons}. "
             f"Check {skipped_path.as_posix()} and localPath/video availability."
         )
-
-    if args.output_hf_dir:
-        from datasets import Dataset
-
-        hf_rows = [_to_hf_row(x) for x in rows]
-        ds = Dataset.from_list(hf_rows)
-        out_dir = Path(args.output_hf_dir)
-        if shard_tag:
-            out_dir = out_dir.with_name(f"{out_dir.name}{shard_tag}")
-        out_dir.mkdir(parents=True, exist_ok=True)
-        ds.save_to_disk(str(out_dir))
-        print(f"Saved HF dataset to: {out_dir.as_posix()}")
 
 
 def parse_args() -> argparse.Namespace:
@@ -548,6 +638,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--style-videos-per-author", type=int, default=20)
     parser.add_argument("--num-shards", type=int, default=1)
     parser.add_argument("--shard-index", type=int, default=0)
+    parser.add_argument(
+        "--flush-every-rows",
+        type=int,
+        default=0,
+        help=(
+            "Flush precomputed rows to disk every N rows to cap RAM usage. "
+            "0 keeps all rows in memory until the end."
+        ),
+    )
     parser.add_argument(
         "--use-torchrun-sharding",
         action="store_true",

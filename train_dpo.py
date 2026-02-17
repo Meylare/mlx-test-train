@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import glob
 import inspect
 import os
 import sys
@@ -7,7 +8,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 import torch
-from datasets import Dataset, load_from_disk
+from datasets import Dataset, concatenate_datasets, load_from_disk
 from transformers import HfArgumentParser, set_seed
 from trl import DPOTrainer
 
@@ -130,6 +131,41 @@ def create_dummy_dataset(
     return Dataset.from_list(data)
 
 
+def _contains_glob(path: str) -> bool:
+    return any(ch in path for ch in "*?[]")
+
+
+def _expand_dataset_paths(dataset_path: str) -> List[str]:
+    path = str(dataset_path).strip()
+    if not path:
+        return []
+
+    if "," in path:
+        out = [p.strip() for p in path.split(",") if p.strip()]
+        return out
+
+    if _contains_glob(path):
+        return sorted(glob.glob(path))
+
+    if os.path.exists(path):
+        return [path]
+
+    part_matches = sorted(glob.glob(f"{path}.part*"))
+    if part_matches:
+        return part_matches
+
+    return []
+
+
+def _load_dataset_single(path: str) -> Dataset:
+    if path.endswith(".pt"):
+        rows = torch.load(path, map_location="cpu")
+        if not isinstance(rows, list):
+            raise ValueError(f"PT dataset must be a list of row dicts: {path}")
+        return Dataset.from_list(rows)
+    return load_from_disk(path)
+
+
 def load_train_dataset(script_cfg: ScriptConfig, model_cfg: PVPModelConfig) -> Dataset:
     if script_cfg.use_dummy_dataset:
         image_size = model_cfg.fixed_image_size if model_cfg.fixed_image_size is not None else (448, 448)
@@ -143,16 +179,16 @@ def load_train_dataset(script_cfg: ScriptConfig, model_cfg: PVPModelConfig) -> D
             "Provide --dataset_path when --use_dummy_dataset=False."
         )
 
-    if not os.path.exists(script_cfg.dataset_path):
+    resolved_paths = _expand_dataset_paths(script_cfg.dataset_path)
+    if not resolved_paths:
         raise FileNotFoundError(f"Dataset path does not exist: {script_cfg.dataset_path}")
 
-    if script_cfg.dataset_path.endswith(".pt"):
-        rows = torch.load(script_cfg.dataset_path, map_location="cpu")
-        if not isinstance(rows, list):
-            raise ValueError("PT dataset must be a list of row dicts.")
-        return Dataset.from_list(rows)
+    datasets_list = [_load_dataset_single(path) for path in resolved_paths]
+    if len(datasets_list) == 1:
+        return datasets_list[0]
 
-    return load_from_disk(script_cfg.dataset_path)
+    print(f"Loading dataset from {len(datasets_list)} parts.")
+    return concatenate_datasets(datasets_list)
 
 
 def _infer_feature_dim(value: Any) -> Optional[int]:

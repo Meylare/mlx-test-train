@@ -187,6 +187,7 @@ echo "SMOKE TRAIN OK"
 
 ## Cell 8: Full unattended run (precompute -> train)
 Run this only after Cell 6 and Cell 7 pass.
+This cell uses RAM-safe chunked precompute (`--flush-every-rows 8`) and then trains from HF parts (`...part*`).
 
 ```bash
 %%bash
@@ -205,15 +206,16 @@ PYTHONUNBUFFERED=1 CUDA_VISIBLE_DEVICES=0,1 python precompute_pvp_vision_feature
   --torch-dtype float16 \
   --device-map auto \
   --image-size 224 \
-  --style-seconds 10 --style-fps 1 \
-  --target-seconds 10 --target-fps 1 \
+  --style-seconds 6 --style-fps 1 \
+  --target-seconds 6 --target-fps 1 \
+  --flush-every-rows 8 \
   2>&1 | tee /kaggle/working/precompute_full.log
 
 echo "=== BUILD TRAIN CONFIG $(date) ==="
 python - << 'PY'
 import json
 cfg = json.load(open("kaggle_train_precomputed.json", "r", encoding="utf-8"))
-cfg["dataset_path"] = "/kaggle/working/pvp_precomputed_hf"
+cfg["dataset_path"] = "/kaggle/working/pvp_precomputed_hf.part*"
 cfg["output_dir"] = "/kaggle/working/outputs/pvp_dpo_precomputed"
 cfg["skip_vision_tower"] = True
 cfg["vision_hidden_size"] = None
@@ -232,6 +234,15 @@ echo "=== DONE $(date) ==="
 ## Cell 9: Final artifacts check
 ```bash
 !ls -lah /kaggle/working/outputs/pvp_dpo_precomputed
+!python - << 'PY'
+import json
+p = "/kaggle/working/mlx-test-train/dataset_50vid_of_prof/pvp_precompute_summary.json"
+d = json.load(open(p, "r", encoding="utf-8"))
+print("rows_total:", d.get("rows_total"))
+print("max_rows_buffered:", d.get("max_rows_buffered"))
+print("flush_every_rows:", d.get("flush_every_rows"))
+print("hf_parts:", len(d.get("output_hf_parts", []) or []))
+PY
 !tail -n 80 /kaggle/working/precompute_full.log
 !tail -n 80 /kaggle/working/train_full.log
 ```
