@@ -91,6 +91,7 @@ class PVPModelConfig:
     projector_hidden_mult: int = 4
     vision_accepts_video: bool = False
     vision_hidden_size: Optional[int] = None
+    skip_vision_tower: bool = False
     fixed_image_size: Optional[str] = "448,448"
 
     def __post_init__(self) -> None:
@@ -182,6 +183,7 @@ def build_pvp_model(
         lora_use_gradient_checkpointing=lora_use_gradient_checkpointing,
         vision_accepts_video=model_cfg.vision_accepts_video,
         vision_hidden_size=model_cfg.vision_hidden_size,
+        skip_vision_tower=model_cfg.skip_vision_tower,
         fixed_image_size=model_cfg.fixed_image_size,
     )
 

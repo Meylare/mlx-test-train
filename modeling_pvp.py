@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple
 
 import torch
@@ -229,6 +230,27 @@ class VisionTower(nn.Module):
         return self._as_tensor(features)
 
 
+class PrecomputedVisionTower(nn.Module):
+    """No-op vision tower for precomputed-vision training.
+
+    This module avoids loading a heavy vision backbone when batches already
+    contain `*_vision_features`.
+    """
+
+    def __init__(self, hidden_size: int) -> None:
+        super().__init__()
+        if hidden_size <= 0:
+            raise ValueError(f"hidden_size must be positive, got {hidden_size}")
+        self.hidden_size = int(hidden_size)
+        self.model = SimpleNamespace(config=SimpleNamespace(hidden_size=self.hidden_size))
+
+    def forward(self, pixel_values: torch.Tensor) -> torch.Tensor:  # pragma: no cover - guard branch
+        raise RuntimeError(
+            "VisionTower is disabled (precomputed mode). "
+            "Provide style_vision_features/target_vision_features instead of pixel_values."
+        )
+
+
 class PerceiverBlock(nn.Module):
     def __init__(
         self,
@@ -430,7 +452,7 @@ class PVPModel(nn.Module):
 
     def __init__(
         self,
-        vision_tower: VisionTower,
+        vision_tower: nn.Module,
         llm: nn.Module,
         tokenizer: Any,
         resampler: PerceiverResampler,
@@ -475,13 +497,27 @@ class PVPModel(nn.Module):
         lora_use_gradient_checkpointing: str = "unsloth",
         vision_accepts_video: bool = False,
         vision_hidden_size: Optional[int] = None,
+        skip_vision_tower: bool = False,
         fixed_image_size: Optional[Tuple[int, int]] = (448, 448),
     ) -> "PVPModel":
-        vision_tower = VisionTower(
-            model_name=vision_model_name,
-            torch_dtype=torch_dtype,
-            device_map=device_map,
-        )
+        if skip_vision_tower:
+            if vision_hidden_size is None:
+                raise ValueError(
+                    "vision_hidden_size must be set when skip_vision_tower=True. "
+                    "It must match precomputed vision feature dim D."
+                )
+            vision_tower = PrecomputedVisionTower(hidden_size=int(vision_hidden_size))
+            vision_hidden = int(vision_hidden_size)
+        else:
+            vision_tower = VisionTower(
+                model_name=vision_model_name,
+                torch_dtype=torch_dtype,
+                device_map=device_map,
+            )
+            vision_hidden = _get_hidden_size(
+                vision_tower.model.config,
+                fallback=vision_hidden_size,
+            )
         llm, tokenizer = load_llm(
             model_name=llm_model_name,
             max_seq_length=max_seq_length,
@@ -503,10 +539,6 @@ class PVPModel(nn.Module):
                 max_seq_length=max_seq_length,
                 use_gradient_checkpointing=lora_use_gradient_checkpointing,
             )
-        vision_hidden = _get_hidden_size(
-            vision_tower.model.config,
-            fallback=vision_hidden_size,
-        )
         llm_hidden = _get_hidden_size(llm.config)
         resampler = PerceiverResampler(
             dim=vision_hidden,

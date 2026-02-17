@@ -15,6 +15,7 @@
   "projector_hidden_mult": 4,
   "vision_accepts_video": false,
   "vision_hidden_size": null,
+  "skip_vision_tower": true,
   "fixed_image_size": null,
 
   "r": 16,

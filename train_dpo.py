@@ -155,6 +155,69 @@ def load_train_dataset(script_cfg: ScriptConfig, model_cfg: PVPModelConfig) -> D
     return load_from_disk(script_cfg.dataset_path)
 
 
+def _infer_feature_dim(value: Any) -> Optional[int]:
+    try:
+        tensor = torch.as_tensor(value)
+    except Exception:
+        return None
+    if tensor.ndim < 1:
+        return None
+    last_dim = int(tensor.shape[-1])
+    if last_dim <= 0:
+        return None
+    return last_dim
+
+
+def _configure_precomputed_mode_from_dataset(
+    model_args: PVPModelConfig,
+    train_dataset: Dataset,
+) -> None:
+    if len(train_dataset) == 0:
+        raise ValueError("Training dataset is empty.")
+
+    sample = train_dataset[0]
+    feature_keys = [
+        "style_vision_features",
+        "chosen_target_vision_features",
+        "rejected_target_vision_features",
+    ]
+    present = [k for k in feature_keys if k in sample]
+
+    if model_args.skip_vision_tower:
+        if not present:
+            raise ValueError(
+                "skip_vision_tower=True but dataset has no precomputed vision keys: "
+                f"{feature_keys}. Use precomputed dataset or disable skip_vision_tower."
+            )
+
+        inferred_dims: List[int] = []
+        for key in present:
+            dim = _infer_feature_dim(sample[key])
+            if dim is not None:
+                inferred_dims.append(dim)
+        if not inferred_dims:
+            raise ValueError(
+                "Could not infer vision feature dim from precomputed fields. "
+                "Check dataset serialization format."
+            )
+
+        inferred_dim = inferred_dims[0]
+        if any(x != inferred_dim for x in inferred_dims):
+            raise ValueError(
+                f"Inconsistent precomputed feature dims in sample: {inferred_dims}. "
+                "Expected same last dim D for all vision fields."
+            )
+
+        if model_args.vision_hidden_size is None:
+            model_args.vision_hidden_size = inferred_dim
+            print(f"Inferred vision_hidden_size={inferred_dim} from precomputed dataset.")
+        elif int(model_args.vision_hidden_size) != inferred_dim:
+            raise ValueError(
+                f"vision_hidden_size={model_args.vision_hidden_size} does not match "
+                f"dataset feature dim D={inferred_dim}."
+            )
+
+
 class MultimodalDPOTrainer(DPOTrainer):
     def concatenated_inputs(self, batch: Dict[str, Any], *args: Any, **kwargs: Any) -> Dict[str, Any]:
         concatenated_batch = super().concatenated_inputs(batch, *args, **kwargs)
@@ -235,6 +298,9 @@ def main() -> None:
     dpo_config = build_dpo_config(training_args)
     dpo_config.remove_unused_columns = False
 
+    train_dataset = load_train_dataset(script_args, model_args)
+    _configure_precomputed_mode_from_dataset(model_args, train_dataset)
+
     model = build_pvp_model(model_args, lora_args)
     tokenizer = model.tokenizer
     if tokenizer.pad_token is None:
@@ -242,7 +308,6 @@ def main() -> None:
     if getattr(model, "config", None) is not None:
         model.config.pad_token_id = tokenizer.pad_token_id
 
-    train_dataset = load_train_dataset(script_args, model_args)
     trainer = build_trainer(model, tokenizer, dpo_config, train_dataset)
 
     trainer.train()
