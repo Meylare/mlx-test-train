@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 import glob
 import json
 import shutil
@@ -31,6 +31,21 @@ class MLXTrainConfig:
     min_free_gb: int
 
     # Optional operational fields.
+    use_lora: bool = True
+    lora_rank: int = 16
+    lora_alpha: int = 32
+    lora_dropout: float = 0.05
+    lora_target_modules: List[str] = field(
+        default_factory=lambda: [
+            "q_proj",
+            "k_proj",
+            "v_proj",
+            "o_proj",
+            "gate_proj",
+            "up_proj",
+            "down_proj",
+        ]
+    )
     dpo_backend: str = "auto"
     trainer_command: Optional[List[str]] = None
     merge_command: Optional[List[str]] = None
@@ -84,6 +99,22 @@ class MLXTrainConfig:
             raise ValueError("min_free_gb must be >= 0.")
         if self.max_train_rows < 0:
             raise ValueError("max_train_rows must be >= 0.")
+        if not isinstance(self.use_lora, bool):
+            raise ValueError("use_lora must be a boolean.")
+        if self.lora_rank <= 0:
+            raise ValueError("lora_rank must be > 0.")
+        if self.lora_alpha <= 0:
+            raise ValueError("lora_alpha must be > 0.")
+        if self.lora_dropout < 0 or self.lora_dropout >= 1:
+            raise ValueError("lora_dropout must be in [0, 1).")
+        if not isinstance(self.lora_target_modules, list):
+            raise ValueError("lora_target_modules must be a list of strings.")
+        if any(not isinstance(x, str) for x in self.lora_target_modules):
+            raise ValueError("lora_target_modules must contain only strings.")
+        cleaned_targets = [x.strip() for x in self.lora_target_modules if x.strip()]
+        if not cleaned_targets:
+            raise ValueError("lora_target_modules must contain at least one module name.")
+        self.lora_target_modules = cleaned_targets
         if self.trainer_command is not None and not isinstance(self.trainer_command, list):
             raise ValueError("trainer_command must be a list of string tokens or null.")
         if self.merge_command is not None and not isinstance(self.merge_command, list):

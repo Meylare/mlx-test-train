@@ -1,38 +1,45 @@
-# Python caches / compiled files
-__pycache__/
-*.py[cod]
-*.pyd
-*.pyo
+# Ignore all new files by default
+*
 
-# Editor / IDE
-.vscode/
-.idea/
-.ipynb_checkpoints/
+# Keep this file tracked
+!.gitignore
 
-# Logs / local outputs
-*.log
-outputs/
-outputs_mlx/
-training_mlx/logs/
-training_mlx/configs/*.runtime.json
-
-# OS files
-.DS_Store
-Thumbs.db
-
-# Large binary artifacts
-*.pt
-*.bin
-*.safetensors
-*.mp4
-*.mkv
-*.webm
-*.avi
-*.mov
-
-# Raw data folders
-dataset/
-dataset_50vid_of_prof/
-*_test.tmp
-
-# If you need to version a manifest, keep a copy outside dataset_50vid_of_prof/
+# Keep only files that are already in the repository
+!.vscode/
+!.vscode/settings.json
+!apifyAPI_connect.py
+!build_pvp_pairs_dataset.py
+!check_unique_videos.py
+!clean_unique_authors.py
+!delete_unneeded_datasets.py
+!download_first_n_shopping.py
+!filter_authors_viral.py
+!get_unique_authors.py
+!make_unique_videos_file.py
+!mock_dataset.py
+!modeling_pvp.py
+!run_full_pipeline.py
+!tokens.txt
+!training/
+!training/KAGGLE_PRECOMPUTE_AND_TRAIN.md
+!training/__init__.py
+!training/kaggle_train_precomputed.json
+!training/merge_precomputed_shards.py
+!training/precompute_pvp_vision_features.py
+!training/train_config.py
+!training/train_dpo.py
+!training_mlx/
+!training_mlx/README_MAC_MLX.md
+!training_mlx/__init__.py
+!training_mlx/configs/
+!training_mlx/configs/full_template.json
+!training_mlx/configs/smoke.json
+!training_mlx/merge_precomputed_shards.py
+!training_mlx/mlx_train_config.py
+!training_mlx/precompute_pvp_vision_features_mac.py
+!training_mlx/requirements_mac_mlx.txt
+!training_mlx/run_full_mac.sh
+!training_mlx/run_smoke_mac.sh
+!training_mlx/train_dpo_mlx.py
+!unique_authors.txt
+!unique_authors_free_scraper.txt

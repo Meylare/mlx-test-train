@@ -49,6 +49,11 @@ Required fields:
 - `min_free_gb`
 
 Additional optional fields:
+- `use_lora` (default `true`)
+- `lora_rank` (default `16`)
+- `lora_alpha` (default `32`)
+- `lora_dropout` (default `0.05`)
+- `lora_target_modules` (default `["q_proj","k_proj","v_proj","o_proj","gate_proj","up_proj","down_proj"]`)
 - `dpo_backend`
 - `trainer_command`
 - `merge_command`
@@ -56,6 +61,28 @@ Additional optional fields:
 - `prepared_train_jsonl`
 - `adapter_subdir`
 - `merged_subdir`
+
+LoRA is now fixed explicitly by config and propagated to MLX DPO CLI.
+This avoids backend-default behavior drift across `mlx_lm_dpo` versions and keeps memory usage stable on Mac machines with 18GB RAM.
+
+Example LoRA block:
+```json
+{
+  "use_lora": true,
+  "lora_rank": 16,
+  "lora_alpha": 32,
+  "lora_dropout": 0.05,
+  "lora_target_modules": [
+    "q_proj",
+    "k_proj",
+    "v_proj",
+    "o_proj",
+    "gate_proj",
+    "up_proj",
+    "down_proj"
+  ]
+}
+```
 
 ## CLI Interfaces
 Precompute:
