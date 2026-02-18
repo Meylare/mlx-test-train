@@ -471,27 +471,27 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--input",
-        default="dataset_50vid_of_prof/authors_shopping_pass07_full_53.json",
+        default="datasetV/authors_shopping_pass07_full_53.json",
         help="Input JSON with author_record/videos.",
     )
     parser.add_argument(
         "--downloads-dir",
-        default="dataset_50vid_of_prof/downloads_shopping",
+        default="datasetV/downloads_shopping",
         help="Directory with downloaded videos grouped by author.",
     )
     parser.add_argument(
         "--output",
-        default="dataset_50vid_of_prof/pvp_pairs_50authors.json",
+        default="datasetV/pvp_pairs_50authors.json",
         help="Output JSON for selected authors with pairs/style split.",
     )
     parser.add_argument(
         "--excluded-output",
-        default="dataset_50vid_of_prof/pvp_excluded_authors.json",
+        default="datasetV/pvp_excluded_authors.json",
         help="Output JSON with excluded authors and reasons.",
     )
     parser.add_argument(
         "--summary-output",
-        default="dataset_50vid_of_prof/pvp_pairs_50authors_summary.txt",
+        default="datasetV/pvp_pairs_50authors_summary.txt",
         help="Output summary text file.",
     )
     parser.add_argument("--target-authors", type=int, default=50)

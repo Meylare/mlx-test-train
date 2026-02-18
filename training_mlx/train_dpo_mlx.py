@@ -260,6 +260,9 @@ def _save_adapter_manifest(
         "learning_rate": cfg.learning_rate,
         "save_steps": cfg.save_steps,
         "logging_steps": cfg.logging_steps,
+        "lora": backend_status.get("lora") or _effective_lora_settings(cfg),
+        "trainer_command": backend_status.get("command"),
+        "trainer_command_str": backend_status.get("command_str"),
         "backend": backend_status,
         "adapter_weights": (adapter_dir / "pvp_prefix_adapter_stub.npz").as_posix(),
         "timestamp_unix": int(time.time()),
@@ -296,7 +299,72 @@ def _run_streaming_command(cmd: Sequence[str], log_path: Path) -> int:
         return int(proc.returncode)
 
 
-def _default_backend_commands(cfg: MLXTrainConfig, train_jsonl: Path) -> List[List[str]]:
+def _effective_lora_settings(cfg: MLXTrainConfig) -> Dict[str, Any]:
+    return {
+        "use_lora": bool(cfg.use_lora),
+        "lora_rank": int(cfg.lora_rank),
+        "lora_alpha": int(cfg.lora_alpha),
+        "lora_dropout": float(cfg.lora_dropout),
+        "lora_target_modules": list(cfg.lora_target_modules),
+    }
+
+
+def _lora_flag_variants(cfg: MLXTrainConfig) -> List[Tuple[str, List[str]]]:
+    if not cfg.use_lora:
+        return [("disabled", [])]
+
+    rank = str(cfg.lora_rank)
+    alpha = str(cfg.lora_alpha)
+    dropout = str(cfg.lora_dropout)
+    modules = list(cfg.lora_target_modules)
+
+    return [
+        (
+            "lora_rank_alpha_modules",
+            [
+                "--lora",
+                "--lora-rank",
+                rank,
+                "--lora-alpha",
+                alpha,
+                "--lora-dropout",
+                dropout,
+                "--lora-target-modules",
+                *modules,
+            ],
+        ),
+        (
+            "use_lora_short_rank_modules",
+            [
+                "--use-lora",
+                "--lora-r",
+                rank,
+                "--lora-alpha",
+                alpha,
+                "--lora-dropout",
+                dropout,
+                "--lora-modules",
+                *modules,
+            ],
+        ),
+        (
+            "lora_rank_alpha_targets",
+            [
+                "--lora",
+                "--rank",
+                rank,
+                "--alpha",
+                alpha,
+                "--dropout",
+                dropout,
+                "--target-modules",
+                *modules,
+            ],
+        ),
+    ]
+
+
+def _default_backend_commands(cfg: MLXTrainConfig, train_jsonl: Path) -> List[Dict[str, Any]]:
     model = cfg.model_id
     output = cfg.output_dir
     epochs = str(cfg.num_train_epochs)
@@ -338,15 +406,36 @@ def _default_backend_commands(cfg: MLXTrainConfig, train_jsonl: Path) -> List[Li
     if cfg.reference_free:
         base_args_full.extend(["--reference-free"])
 
-    return [
-        [sys.executable, "-m", "mlx_lm_dpo.train", "--train-file", train_jsonl.as_posix(), *base_args_full],
-        [sys.executable, "-m", "mlx_lm_dpo", "--train-file", train_jsonl.as_posix(), *base_args_full],
-        [sys.executable, "-m", "mlx_lm_dpo.train", "--dataset", train_jsonl.as_posix(), *base_args_full],
+    train_entrypoints: List[Tuple[str, List[str]]] = [
+        (
+            "mlx_lm_dpo.train_train_file",
+            [sys.executable, "-m", "mlx_lm_dpo.train", "--train-file", train_jsonl.as_posix()],
+        ),
+        (
+            "mlx_lm_dpo_train_file",
+            [sys.executable, "-m", "mlx_lm_dpo", "--train-file", train_jsonl.as_posix()],
+        ),
+        (
+            "mlx_lm_dpo.train_dataset",
+            [sys.executable, "-m", "mlx_lm_dpo.train", "--dataset", train_jsonl.as_posix()],
+        ),
     ]
+    commands: List[Dict[str, Any]] = []
+    for backend_variant, prefix in train_entrypoints:
+        for lora_cli_variant, lora_flags in _lora_flag_variants(cfg):
+            commands.append(
+                {
+                    "command": [*prefix, *base_args_full, *lora_flags],
+                    "backend_variant": backend_variant,
+                    "lora_cli_variant": lora_cli_variant,
+                }
+            )
+    return commands
 
 
 def _run_mlx_dpo(cfg: MLXTrainConfig, train_jsonl: Path, output_dir: Path) -> Dict[str, Any]:
     log_path = output_dir / "train_dpo_mlx.log"
+    lora_settings = _effective_lora_settings(cfg)
     mapping = {
         "model_id": cfg.model_id,
         "train_file": train_jsonl.as_posix(),
@@ -361,28 +450,96 @@ def _run_mlx_dpo(cfg: MLXTrainConfig, train_jsonl: Path, output_dir: Path) -> Di
         "save_steps": str(cfg.save_steps),
         "logging_steps": str(cfg.logging_steps),
         "seed": str(cfg.seed),
+        "use_lora": str(cfg.use_lora).lower(),
+        "lora_rank": str(cfg.lora_rank),
+        "lora_alpha": str(cfg.lora_alpha),
+        "lora_dropout": str(cfg.lora_dropout),
+        "lora_target_modules_csv": ",".join(cfg.lora_target_modules),
     }
 
-    commands: List[List[str]]
+    commands: List[Dict[str, Any]]
     if cfg.trainer_command:
-        commands = [_format_command_template(cfg.trainer_command, mapping)]
+        base_cmd = _format_command_template(cfg.trainer_command, mapping)
+        if cfg.use_lora:
+            lora_cli_variant, lora_flags = _lora_flag_variants(cfg)[0]
+            base_cmd = [*base_cmd, *lora_flags]
+        else:
+            lora_cli_variant = "disabled"
+        commands = [
+            {
+                "command": base_cmd,
+                "backend_variant": "trainer_command",
+                "lora_cli_variant": lora_cli_variant,
+            }
+        ]
     else:
         commands = _default_backend_commands(cfg, train_jsonl)
 
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("a", encoding="utf-8") as logf:
+        logf.write(
+            json.dumps(
+                {
+                    "event": "mlx_dpo_launch_config",
+                    "lora": lora_settings,
+                    "candidate_commands": [
+                        {
+                            "backend_variant": item["backend_variant"],
+                            "lora_cli_variant": item["lora_cli_variant"],
+                            "command": shlex.join(item["command"]),
+                        }
+                        for item in commands
+                    ],
+                },
+                ensure_ascii=False,
+            )
+            + "\n"
+        )
+
     failures: List[Dict[str, Any]] = []
-    for cmd in commands:
+    for item in commands:
+        cmd = item["command"]
         try:
             rc = _run_streaming_command(cmd, log_path)
         except FileNotFoundError as exc:
-            failures.append({"command": cmd, "error": f"not_found: {exc}"})
+            failures.append(
+                {
+                    "command": cmd,
+                    "backend_variant": item["backend_variant"],
+                    "lora_cli_variant": item["lora_cli_variant"],
+                    "error": f"not_found: {exc}",
+                }
+            )
             continue
         except Exception as exc:  # pragma: no cover
-            failures.append({"command": cmd, "error": str(exc)})
+            failures.append(
+                {
+                    "command": cmd,
+                    "backend_variant": item["backend_variant"],
+                    "lora_cli_variant": item["lora_cli_variant"],
+                    "error": str(exc),
+                }
+            )
             continue
 
         if rc == 0:
-            return {"status": "ok", "command": cmd, "log_file": log_path.as_posix()}
-        failures.append({"command": cmd, "return_code": rc})
+            return {
+                "status": "ok",
+                "command": cmd,
+                "command_str": shlex.join(cmd),
+                "backend_variant": item["backend_variant"],
+                "lora_cli_variant": item["lora_cli_variant"],
+                "lora": lora_settings,
+                "log_file": log_path.as_posix(),
+            }
+        failures.append(
+            {
+                "command": cmd,
+                "backend_variant": item["backend_variant"],
+                "lora_cli_variant": item["lora_cli_variant"],
+                "return_code": rc,
+            }
+        )
 
     raise RuntimeError(
         "Failed to run mlx-lm-dpo backend. "

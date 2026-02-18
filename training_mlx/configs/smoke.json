@@ -1,6 +1,6 @@
 {
-  "model_id": "REPLACE_WITH_MLX_MODEL_ID",
-  "dataset_path": "dataset_50vid_of_prof/pvp_precomputed_hf_smoke.part*",
+  "model_id": "mlx-community/Qwen3-VL-8B-Instruct-4bit",
+  "dataset_path": "datasetV/pvp_precomputed_hf_smoke.part*",
   "output_dir": "outputs_mlx/pvp_dpo_smoke",
   "num_train_epochs": 0.02,
   "learning_rate": 5e-5,
@@ -17,6 +17,19 @@
   "enable_optional_merge": false,
   "strict_manifest_validation": true,
   "min_free_gb": 8,
+  "use_lora": true,
+  "lora_rank": 16,
+  "lora_alpha": 32,
+  "lora_dropout": 0.05,
+  "lora_target_modules": [
+    "q_proj",
+    "k_proj",
+    "v_proj",
+    "o_proj",
+    "gate_proj",
+    "up_proj",
+    "down_proj"
+  ],
   "dpo_backend": "auto",
   "trainer_command": null,
   "merge_command": null,

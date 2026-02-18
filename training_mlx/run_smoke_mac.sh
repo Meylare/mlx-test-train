@@ -10,14 +10,22 @@ if ! command -v "${PYTHON_BIN}" >/dev/null 2>&1; then
 fi
 
 mkdir -p training_mlx/logs outputs_mlx
+DATASET_ROOT="${DATASET_ROOT:-datasetV}"
+MANIFEST_SMOKE="${DATASET_ROOT}/pvp_pairs_smoke1.json"
+PRECOMP_PT="${DATASET_ROOT}/pvp_precomputed_rows_smoke.pt"
+PRECOMP_HF="${DATASET_ROOT}/pvp_precomputed_hf_smoke"
+PRECOMP_SUMMARY="${DATASET_ROOT}/pvp_precompute_summary_smoke.json"
+PRECOMP_SKIPPED="${DATASET_ROOT}/pvp_precompute_skipped_smoke.json"
 
 echo "=== SMOKE: build mini manifest ==="
 "${PYTHON_BIN}" - << 'PY'
 import json
+import os
 from pathlib import Path
 
-src = Path("dataset_50vid_of_prof/pvp_pairs_50authors.json")
-dst = Path("dataset_50vid_of_prof/pvp_pairs_smoke1.json")
+root = Path(os.environ.get("DATASET_ROOT", "datasetV"))
+src = root / "pvp_pairs_50authors.json"
+dst = root / "pvp_pairs_smoke1.json"
 d = json.loads(src.read_text(encoding="utf-8"))
 authors = d.get("authors", [])
 if not authors:
@@ -32,11 +40,11 @@ PY
 
 echo "=== SMOKE: precompute ==="
 "${PYTHON_BIN}" -m training_mlx.precompute_pvp_vision_features_mac \
-  --manifest dataset_50vid_of_prof/pvp_pairs_smoke1.json \
-  --output-pt dataset_50vid_of_prof/pvp_precomputed_rows_smoke.pt \
-  --output-hf-dir dataset_50vid_of_prof/pvp_precomputed_hf_smoke \
-  --summary-json dataset_50vid_of_prof/pvp_precompute_summary_smoke.json \
-  --skipped-json dataset_50vid_of_prof/pvp_precompute_skipped_smoke.json \
+  --manifest "${MANIFEST_SMOKE}" \
+  --output-pt "${PRECOMP_PT}" \
+  --output-hf-dir "${PRECOMP_HF}" \
+  --summary-json "${PRECOMP_SUMMARY}" \
+  --skipped-json "${PRECOMP_SKIPPED}" \
   --vision-model-name "Qwen/Qwen2.5-Omni-7B" \
   --torch-dtype float16 \
   --device-map auto \
@@ -51,6 +59,7 @@ echo "=== SMOKE: precompute ==="
 echo "=== SMOKE: runtime config ==="
 "${PYTHON_BIN}" - << 'PY'
 import json
+import os
 from pathlib import Path
 
 cfg_path = Path("training_mlx/configs/smoke.json")
@@ -58,7 +67,8 @@ runtime_path = Path("training_mlx/configs/smoke.runtime.json")
 cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
 if cfg.get("model_id", "").startswith("REPLACE_"):
     raise SystemExit("Please set model_id in training_mlx/configs/smoke.json first.")
-cfg["dataset_path"] = "dataset_50vid_of_prof/pvp_precomputed_hf_smoke.part*"
+dataset_root = os.environ.get("DATASET_ROOT", "datasetV")
+cfg["dataset_path"] = f"{dataset_root}/pvp_precomputed_hf_smoke.part*"
 cfg["output_dir"] = "outputs_mlx/pvp_dpo_smoke"
 runtime_path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
 print(f"written {runtime_path.as_posix()}")
