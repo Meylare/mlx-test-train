@@ -37,9 +37,12 @@
 !training_mlx/merge_precomputed_shards.py
 !training_mlx/mlx_train_config.py
 !training_mlx/precompute_pvp_vision_features_mac.py
+!training_mlx/infer_video_mlx.py
 !training_mlx/requirements_mac_mlx.txt
 !training_mlx/run_full_mac.sh
 !training_mlx/run_smoke_mac.sh
 !training_mlx/train_dpo_mlx.py
+!dataset_50vid_of_prof/
+!dataset_50vid_of_prof/pvp_pairs_50authors.json
 !unique_authors.txt
 !unique_authors_free_scraper.txt
