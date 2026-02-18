@@ -138,7 +138,7 @@ json.dump(d, open(out, 'w', encoding='utf-8'), ensure_ascii=False, indent=2)
 print('written', out, 'picked', picked.get('author', {}).get('name'))
 PY
 
-PYTHONUNBUFFERED=1 CUDA_VISIBLE_DEVICES=0,1 python precompute_pvp_vision_features.py \
+PYTHONUNBUFFERED=1 CUDA_VISIBLE_DEVICES=0,1 python -m training.precompute_pvp_vision_features \
   --manifest dataset_50vid_of_prof/pvp_pairs_smoke1.json \
   --output-pt dataset_50vid_of_prof/pvp_precomputed_rows_smoke.pt \
   --output-hf-dir '' \
@@ -169,7 +169,7 @@ cd /kaggle/working/mlx-test-train
 
 python - << 'PY'
 import json
-cfg = json.load(open('kaggle_train_precomputed.json', 'r', encoding='utf-8'))
+cfg = json.load(open('training/kaggle_train_precomputed.json', 'r', encoding='utf-8'))
 cfg['dataset_path'] = 'dataset_50vid_of_prof/pvp_precomputed_rows_smoke.pt'
 cfg['output_dir'] = '/kaggle/working/outputs/pvp_dpo_smoke'
 cfg['num_train_epochs'] = 0.02
@@ -195,7 +195,7 @@ print('written /kaggle/working/kaggle_train_precomputed_smoke.json')
 PY
 
 PVP_SKIP_TRAINER_SAVE=1 PVP_SKIP_FINAL_SAVE=1 PYTHONUNBUFFERED=1 CUDA_VISIBLE_DEVICES=0 \
-python train_dpo.py /kaggle/working/kaggle_train_precomputed_smoke.json \
+python -m training.train_dpo /kaggle/working/kaggle_train_precomputed_smoke.json \
   2>&1 | tee /kaggle/working/train_smoke.log
 
 python - << 'PY'
@@ -230,7 +230,7 @@ if [ "$free_gb" -lt "$min_gb" ]; then
 fi
 
 echo "=== FULL PRECOMPUTE START $(date) ==="
-PYTHONUNBUFFERED=1 CUDA_VISIBLE_DEVICES=0,1 python precompute_pvp_vision_features.py \
+PYTHONUNBUFFERED=1 CUDA_VISIBLE_DEVICES=0,1 python -m training.precompute_pvp_vision_features \
   --manifest dataset_50vid_of_prof/pvp_pairs_50authors.json \
   --output-pt dataset_50vid_of_prof/pvp_precomputed_rows.pt \
   --output-hf-dir /kaggle/working/pvp_precomputed_hf \
@@ -271,7 +271,7 @@ fi
 echo "=== BUILD TRAIN CONFIG $(date) ==="
 python - << 'PY'
 import json
-cfg = json.load(open('kaggle_train_precomputed.json', 'r', encoding='utf-8'))
+cfg = json.load(open('training/kaggle_train_precomputed.json', 'r', encoding='utf-8'))
 cfg['dataset_path'] = '/kaggle/working/pvp_precomputed_hf.part*'
 cfg['output_dir'] = '/kaggle/working/outputs/pvp_dpo_precomputed'
 cfg['skip_vision_tower'] = True
@@ -292,7 +292,7 @@ PY
 
 echo "=== FULL TRAIN START $(date) ==="
 PVP_SKIP_TRAINER_SAVE=1 PVP_IGNORE_SAVE_ERRORS=1 PYTHONUNBUFFERED=1 CUDA_VISIBLE_DEVICES=0,1 torchrun --nproc_per_node=2 --master_port=29501 \
-  train_dpo.py /kaggle/working/kaggle_train_precomputed_runtime.json \
+  -m training.train_dpo /kaggle/working/kaggle_train_precomputed_runtime.json \
   > /kaggle/working/train_full.log 2>&1
 tail -n 120 /kaggle/working/train_full.log
 

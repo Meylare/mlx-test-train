@@ -12,13 +12,22 @@ from datasets import Dataset, concatenate_datasets, load_from_disk
 from transformers import HfArgumentParser, set_seed
 from trl import DPOTrainer
 
-from train_config import (
-    DPOTrainingConfig,
-    LoRAConfig,
-    PVPModelConfig,
-    build_dpo_config,
-    build_pvp_model,
-)
+try:
+    from .train_config import (
+        DPOTrainingConfig,
+        LoRAConfig,
+        PVPModelConfig,
+        build_dpo_config,
+        build_pvp_model,
+    )
+except ImportError:
+    from train_config import (
+        DPOTrainingConfig,
+        LoRAConfig,
+        PVPModelConfig,
+        build_dpo_config,
+        build_pvp_model,
+    )
 
 
 def _configure_distributed_runtime(
