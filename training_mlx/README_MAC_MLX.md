@@ -6,6 +6,7 @@ This directory adds a parallel local pipeline for macOS + MLX and keeps the orig
 - `precompute_pvp_vision_features_mac.py`: local hybrid precompute (torch + transformers), same row schema as old pipeline.
 - `train_dpo_mlx.py`: MLX DPO launcher with dataset conversion, adapter artifact manifest, optional merge (best-effort).
 - `merge_precomputed_shards.py`: merge `.part*` shards (PT or HF datasets).
+- `infer_video_mlx.py`: local inference from actual video files (style + target), returns `VIRAL/NOT_VIRAL` and explanation.
 - `mlx_train_config.py`: strict config schema and disk/path validation.
 - `configs/smoke.json`, `configs/full_template.json`: templates for smoke/full.
 - `run_smoke_mac.sh`, `run_full_mac.sh`: end-to-end scripts.
@@ -76,6 +77,21 @@ python -m training_mlx.merge_precomputed_shards \
   --input-glob "dataset_50vid_of_prof/pvp_precomputed_hf.part*" \
   --output dataset_50vid_of_prof/pvp_precomputed_hf_merged
 ```
+
+Inference from videos:
+```bash
+python -m training_mlx.infer_video_mlx \
+  --model-id "<your_mlx_model_id>" \
+  --style-video "/path/to/style1.mp4" \
+  --style-video "/path/to/style2.mp4" \
+  --target-video "/path/to/target.mp4" \
+  --json-output outputs_mlx/infer/result.json
+```
+
+Output contains:
+- `label` (`VIRAL` or `NOT_VIRAL`)
+- `explanation` (human-readable reasons)
+- `metrics` (feature diagnostics used for decision)
 
 ## Runbook
 Smoke:
