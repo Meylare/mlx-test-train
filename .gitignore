@@ -12,6 +12,9 @@ __pycache__/
 # Logs / local outputs
 *.log
 outputs/
+outputs_mlx/
+training_mlx/logs/
+training_mlx/configs/*.runtime.json
 
 # OS files
 .DS_Store
